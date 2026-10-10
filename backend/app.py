@@ -1,4 +1,13 @@
-"""CcAsr FastAPI 服务"""
+"""
+CcAsr FastAPI 服务
+
+架构：**会议项目制**
+    项目（文档，如「xx 会议」）
+      └── 多段录音（按 order 串行转录）
+            └── 全部完成后：跨录音统一说话人 → 合并转录 → 自动生成会议纪要
+
+旧的「单文件任务」流程已移除（见 CHANGELOG）。
+"""
 
 # ── 性能优化: 必须在 import torch 之前设置 ──
 import os
@@ -6,24 +15,23 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 import json
-import sys
-import uuid
-import tempfile
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query, BackgroundTasks, Form
-from fastapi.responses import JSONResponse, PlainTextResponse, FileResponse, HTMLResponse
+from fastapi import (
+    FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form,
+)
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.backends import get_backend
-from backend.schema import TranscriptionResult, TaskStatus, TaskState, SummarizeJob
+from backend.schema import TaskState, ProjectState
 from backend.file_store import get_file_store
+from backend.project_store import get_project_store
 from backend.config import env, get_output_dir
-from backend.summarize import run_summarize, get_summary_filename, get_preset_list, PRESETS
 
 # ── Debug 模式 ───────────────────────────────────────────────
 DEBUG = (env("DEBUG", "0") or "0").lower() in ("1", "true", "yes")
@@ -38,24 +46,14 @@ if DEBUG:
     logger.debug("Debug mode enabled (CCASR_DEBUG=1)")
 
 # ── 常量 ──────────────────────────────────────────────────────
-MAX_UPLOAD_SIZE = 500 * 1024 * 1024  # 500MB
-MAX_TASKS_IN_MEMORY = 100            # 保留最近 N 条任务
+MAX_UPLOAD_SIZE = 500 * 1024 * 1024  # 单文件 500MB
 
 app = FastAPI(
     title="CcAsr",
-    description="离线语音转文字 + 声纹识别服务",
-    version="0.2.0",
+    description="离线语音转文字 + 声纹识别 + 会议纪要",
+    version="0.3.0",
 )
 
-
-@app.on_event("startup")
-async def startup_event():
-    """启动时加载持久化的任务数据"""
-    _load_tasks()
-    logger.info("Startup: loaded %d tasks", len(task_store))
-    _load_summarize_jobs()
-
-# ── CORS 中间件 ──────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -64,156 +62,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 输出目录（含旧版数据自动迁移）
-OUTPUT_DIR = get_output_dir()
-
-# ── 任务管理 (内存 dict + 持久化 + 自动清理) ──────────────────
-TASKS_FILE = OUTPUT_DIR / "tasks.json"
-task_store: Dict[str, TaskStatus] = {}
-
-
-def _save_tasks():
-    """持久化任务元数据到 tasks.json"""
-    data = []
-    for task in task_store.values():
-        d = {
-            "task_id": task.task_id,
-            "state": task.state.value,
-            "filename": task.filename,
-            "progress": task.progress,
-            "created_at": task.created_at,
-            "completed_at": task.completed_at,
-            "error": task.error,
-        }
-        data.append(d)
-    data.sort(key=lambda t: t.get("created_at", ""), reverse=True)
-    tmp = TASKS_FILE.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    os.replace(str(tmp), str(TASKS_FILE))
-
-
-def _load_tasks():
-    """从 tasks.json 加载任务元数据（不含 result，结果从磁盘 JSON 按需加载）"""
-    if not TASKS_FILE.exists():
-        return
-    try:
-        with open(TASKS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        for d in data:
-            task = TaskStatus(
-                task_id=d["task_id"],
-                state=TaskState(d["state"]),
-                filename=d["filename"],
-                progress=d.get("progress", 1.0),
-                created_at=d.get("created_at"),
-                completed_at=d.get("completed_at"),
-                error=d.get("error"),
-            )
-            # 尝试从磁盘加载结果
-            if task.state == TaskState.completed:
-                result_file = OUTPUT_DIR / f"{task.task_id}.json"
-                if result_file.exists():
-                    task.result = {"_loaded": True}  # 标记有结果，按需加载
-            task_store[task.task_id] = task
-        logger.info("Loaded %d tasks from %s", len(task_store), TASKS_FILE)
-    except Exception as e:
-        logger.warning("Failed to load tasks: %s", e)
-
-
-def _cleanup_old_tasks():
-    """保留最近 MAX_TASKS_IN_MEMORY 条任务，清理旧的"""
-    if len(task_store) <= MAX_TASKS_IN_MEMORY:
-        return
-    # 按 created_at 排序，删除最旧的
-    sorted_ids = sorted(
-        task_store.keys(),
-        key=lambda tid: task_store[tid].created_at or "",
-    )
-    to_remove = sorted_ids[: len(sorted_ids) - MAX_TASKS_IN_MEMORY]
-    for tid in to_remove:
-        task = task_store.pop(tid, None)
-        if task:
-            logger.info("[task %s] Cleaned up (old task)", tid)
-            # 清理结果 JSON
-            result_file = OUTPUT_DIR / f"{tid}.json"
-            if result_file.exists():
-                result_file.unlink(missing_ok=True)
-    _save_tasks()
-
-
-def _process_task(task_id: str, file_path: str, filename: str, language: str) -> None:
-    """后台任务: 执行转写并更新 task_store"""
-    task = task_store.get(task_id)
-    if task is None:
-        logger.warning("[task %s] Not found in task_store, skipping", task_id)
-        return
-
-    task.state = TaskState.processing
-    task.progress = 0.1
-    logger.info("[task %s] Processing started: %s (lang=%s)", task_id, filename, language)
-    if DEBUG:
-        logger.debug("[task %s] file_path=%s, file_size=%s", task_id, file_path,
-                     os.path.getsize(file_path) if os.path.exists(file_path) else "N/A")
-
-    try:
-        pipeline = get_backend()
-        if DEBUG:
-            logger.debug("[task %s] Pipeline loaded, device=%s", task_id, pipeline.device)
-
-        result = pipeline.transcribe(audio_path=file_path, language=language)
-        if DEBUG:
-            logger.debug("[task %s] Transcription done: %d segments, %.1fs duration",
-                         task_id, len(result.segments), result.duration)
-
-        # 保存结果到文件
-        output_file = OUTPUT_DIR / f"{task_id}.json"
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(result.to_json())
-
-        now = datetime.now(timezone.utc).isoformat()
-        task.state = TaskState.completed
-        task.progress = 1.0
-        task.completed_at = now
-        # 不在内存中保留 result — get_task_result 已支持从磁盘 JSON 按需加载
-        task.result = {"_loaded": True}
-        _save_tasks()
-        logger.info("[task %s] Completed: %s (%d segments)", task_id, filename, len(result.segments))
-
-    except Exception as e:
-        logger.exception("[task %s] Failed: %s", task_id, e)
-        task.state = TaskState.failed
-        task.error = str(e)
-        _save_tasks()
-
-    finally:
-        # pipeline.transcribe() 内部已清理转码临时文件
-        # 音频文件由 FileStore 管理，不在这里删除
-        _cleanup_old_tasks()
-
-
-# ── 端点 ──────────────────────────────────────────────────────
 
 @app.get("/api")
 async def root():
     return {
         "service": "CcAsr",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "debug": DEBUG,
+        "model": "会议项目制（多段录音串行转录 + 自动纪要）",
         "endpoints": {
-            "POST /transcribe": "上传音频文件进行转写 (同步)",
-            "POST /api/tasks": "创建异步转写任务",
-            "GET /api/tasks": "列出所有任务",
-            "GET /api/tasks/{task_id}": "查询任务状态",
-            "GET /api/tasks/{task_id}/result": "获取转写结果",
-            "GET /api/tasks/{task_id}/audio": "获取音频文件",
-            "GET /api/summarize/presets": "列出 AI 总结预设",
-            "POST /api/tasks/{task_id}/summarize": "创建 AI 总结任务",
-            "GET /api/tasks/{task_id}/summarize": "查询总结状态",
-            "GET /api/tasks/{task_id}/summarize/result": "获取总结结果",
-            "GET /api/tasks/{task_id}/summarize/preview": "预览总结结果（HTML页面）",
-            "GET /api/files": "列出所有文件记录",
-            "GET /health": "健康检查",
+            "POST   /api/projects": "创建会议项目",
+            "GET    /api/projects": "列出会议项目",
+            "GET    /api/projects/{id}": "项目详情（含录音队列状态）",
+            "PATCH  /api/projects/{id}": "重命名项目",
+            "DELETE /api/projects/{id}": "删除项目",
+            "POST   /api/projects/{id}/recordings": "一次上传多个录音（入队）",
+            "POST   /api/projects/{id}/start": "启动/继续转录队列",
+            "GET    /api/projects/{id}/transcript": "合并转录文档",
+            "GET    /api/projects/{id}/summary": "会议纪要（自动生成）",
+            "POST   /api/projects/{id}/reference": "上传参考材料",
+            "GET    /api/projects/{id}/recordings/{rid}/audio": "单段录音音频",
+            "GET    /health": "健康检查",
         },
     }
 
@@ -222,24 +91,24 @@ async def root():
 async def health():
     import torch
     pipeline = get_backend()
-    # resource 模块仅 Unix 可用; Windows 下用 psutil 或跳过
     rss_mb = 0
     try:
         import resource
         ru = resource.getrusage(resource.RUSAGE_SELF)
         rss_mb = ru.ru_maxrss / 1024 / 1024  # macOS: bytes
         if sys.platform.startswith("linux"):
-            rss_mb = ru.ru_maxrss / 1024  # Linux: KB
+            rss_mb = ru.ru_maxrss / 1024      # Linux: KB
     except ImportError:
         try:
             import psutil
             rss_mb = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
         except ImportError:
             pass
+
     mps_alloc = 0
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         mps_alloc = torch.mps.current_allocated_memory() / 1024 / 1024
-    # 诊断字段: 用于确认运行中的进程确实加载了当前代码（热重载后排查用）
+
     pipeline_cls = type(pipeline)
     has_eigengap = hasattr(pipeline_cls, "_estimate_speaker_count")
     return {
@@ -249,425 +118,454 @@ async def health():
         "debug": DEBUG,
         "code": {
             "pid": os.getpid(),
-            "diarization": "nonnegative+eigengap" if has_eigengap else "legacy(affinity=cosine)",
+            "diarization": "nonnegative+eigengap" if has_eigengap
+                           else "legacy(affinity=cosine)",
         },
-        "memory": {
-            "rss_mb": round(rss_mb),
-            "mps_allocated_mb": round(mps_alloc),
-        },
+        "memory": {"rss_mb": round(rss_mb), "mps_allocated_mb": round(mps_alloc)},
     }
 
 
-@app.post("/transcribe")
-async def transcribe(
-    file: UploadFile = File(description="音频文件 (wav/mp3/m4a/flac)"),
-    language: str = Query(default="zh", description="语种: zh/auto/en/yue/ja/ko (默认中文)"),
-    output_format: str = Query(default="json", description="输出格式: json/text"),
-):
+# ══════════════════════════════════════════════════════════════
+# 会议项目 API
+# ══════════════════════════════════════════════════════════════
+
+def _run_project_queue(project_id: str) -> None:
     """
-    上传音频文件, 返回转写结果 (同步)
+    后台任务：**串行**处理项目队列中的所有录音。
+
+    用单个后台任务 + while 循环，而不是每段录音各提交一个后台任务 ——
+    后者会让多段录音并发抢 CPU/GPU。这里严格按 order 顺序逐段转录。
+
+    全部录音结束后：
+      1) 跨录音统一说话人（消除分段录音导致的身份不一致）
+      2) 生成合并转录文档
+      3) 自动生成会议纪要
     """
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail=f"文件过大，最大支持 {MAX_UPLOAD_SIZE // 1024 // 1024}MB")
+    store = get_project_store()
+    proj = store.get(project_id)
+    if proj is None:
+        logger.warning("[project %s] 队列启动时项目已不存在", project_id)
+        return
 
-    filename = file.filename or "unknown.wav"
-    # 保存到 FileStore（MD5 去重）
-    file_path = get_file_store().save_file(content, filename, "sync_" + uuid.uuid4().hex[:8])
+    logger.info("[project %s] 开始串行转录队列（共 %d 段）",
+                project_id, len(proj.recordings))
 
-    try:
-        pipeline = get_backend()
-        result = pipeline.transcribe(audio_path=str(file_path), language=language)
+    while True:
+        rec = store.next_pending(project_id)
+        if rec is None:
+            break
 
-        output_file = OUTPUT_DIR / f"{Path(filename).stem}.json"
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(result.to_json())
+        rec.state = TaskState.processing
+        rec.progress = 0.05
+        store.update_state(project_id)
 
-        if output_format == "text":
-            return PlainTextResponse(result.to_plain_text())
+        audio_path = get_file_store().get_file_path(rec.recording_id)
+        if audio_path is None:
+            rec.state = TaskState.failed
+            rec.error = "音频文件未找到（可能已被清理）"
+            store.update_state(project_id)
+            logger.error("[rec %s] 音频缺失，跳过", rec.recording_id)
+            continue
 
-        return JSONResponse(content=result.to_dict())
-
-    except Exception as e:
-        logger.exception("Transcription failed")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── 异步任务 API ────────────────────────────────────────────
-
-@app.post("/api/tasks")
-async def create_task(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(description="音频文件 (wav/mp3/m4a/flac)"),
-    language: str = Query(default="zh", description="语种: zh/auto/en/yue/ja/ko (默认中文)"),
-):
-    """
-    创建异步转写任务: 上传文件 → 返回 task_id → 后台处理 → 前端轮询
-    """
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail=f"文件过大，最大支持 {MAX_UPLOAD_SIZE // 1024 // 1024}MB")
-
-    task_id = uuid.uuid4().hex[:12]
-    filename = file.filename or "unknown.wav"
-
-    # 保存文件（MD5 去重，永久保存）
-    file_path = get_file_store().save_file(content, filename, task_id)
-
-    # 创建任务记录
-    now = datetime.now(timezone.utc).isoformat()
-    task = TaskStatus(
-        task_id=task_id,
-        state=TaskState.pending,
-        filename=filename,
-        progress=0.0,
-        created_at=now,
-    )
-    task_store[task_id] = task
-    _save_tasks()
-
-    # 提交后台任务
-    background_tasks.add_task(_process_task, task_id, str(file_path), filename, language)
-    logger.info("[task %s] Created for file: %s (size=%d bytes, path=%s)",
-                task_id, filename, len(content), file_path)
-
-    return JSONResponse(status_code=202, content=task.to_dict())
-
-
-@app.get("/api/tasks")
-async def list_tasks():
-    """列出所有任务"""
-    _cleanup_old_tasks()
-    tasks = [task.to_dict() for task in task_store.values()]
-    tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
-    return JSONResponse(content=tasks)
-
-
-@app.get("/api/tasks/{task_id}")
-async def get_task(task_id: str):
-    """查询单个任务状态"""
-    task = task_store.get(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
-    if DEBUG:
-        logger.debug("[task %s] Status query: state=%s, progress=%.2f", task_id, task.state.value, task.progress)
-    return JSONResponse(content=task.to_dict())
-
-
-@app.get("/api/tasks/{task_id}/result")
-async def get_task_result(task_id: str):
-    """获取任务转写结果"""
-    task = task_store.get(task_id)
-    if task is None or task.state != TaskState.completed:
-        # 直接从磁盘加载
-        output_file = OUTPUT_DIR / f"{task_id}.json"
-        if output_file.exists():
-            with open(output_file, "r", encoding="utf-8") as f:
-                return JSONResponse(content=json.load(f))
-        if task is None:
-            raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
-        raise HTTPException(status_code=400, detail=f"Task not completed (state={task.state.value})")
-
-    # 优先从磁盘加载（result 可能是持久化标记或 None）
-    output_file = OUTPUT_DIR / f"{task_id}.json"
-    if output_file.exists():
-        with open(output_file, "r", encoding="utf-8") as f:
-            return JSONResponse(content=json.load(f))
-
-    # 回退到内存中的 result
-    if task.result and "_loaded" not in task.result:
-        return JSONResponse(content=task.result)
-
-    raise HTTPException(status_code=404, detail="Result file not found")
-
-
-@app.get("/api/tasks/{task_id}/audio")
-async def get_task_audio(task_id: str):
-    """获取任务对应的音频文件（用于波形播放）"""
-    file_path = get_file_store().get_file_path(task_id)
-    if file_path is None:
-        raise HTTPException(status_code=404, detail="Audio file not found")
-
-    original_name = get_file_store().get_original_name(task_id) or "audio"
-    suffix = file_path.suffix.lower()
-    media_type = "audio/wav"
-    if suffix == ".mp3":
-        media_type = "audio/mpeg"
-    elif suffix == ".m4a":
-        media_type = "audio/mp4"
-    elif suffix == ".flac":
-        media_type = "audio/flac"
-
-    if DEBUG:
-        logger.debug("[task %s] Serving audio: %s", task_id, file_path)
-    return FileResponse(path=str(file_path), media_type=media_type, filename=original_name)
-
-
-@app.get("/api/files")
-async def list_files():
-    """列出所有文件记录"""
-    files = get_file_store().list_files()
-    return JSONResponse(content=files)
-
-
-# ── AI 总结 API ──────────────────────────────────────────────
-
-# 总结任务存储 (task_id → SummarizeJob)，内存中只保留最新一个
-summarize_store: Dict[str, SummarizeJob] = {}
-
-
-def _save_summarize_meta(job: SummarizeJob):
-    """持久化总结任务元数据到磁盘。"""
-    meta_file = OUTPUT_DIR / f"{job.task_id}_summary_meta.json"
-    with open(meta_file, "w", encoding="utf-8") as f:
-        json.dump(job.to_dict(), f, ensure_ascii=False)
-
-
-def _load_summarize_jobs():
-    """启动时从磁盘加载已完成的总结任务。"""
-    for meta_file in OUTPUT_DIR.glob("*_summary_meta.json"):
         try:
-            with open(meta_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            task_id = data.get("task_id", "")
-            if not task_id:
-                continue
-            job = SummarizeJob(
-                job_id=data.get("job_id", ""),
-                task_id=task_id,
-                preset=data.get("preset", "podcast_polish"),
-                state=TaskState(data.get("state", "completed")),
-                progress=data.get("progress", 1.0),
-                has_reference=data.get("has_reference", False),
-                include_intro=data.get("include_intro", True),
-                error=data.get("error"),
-                created_at=data.get("created_at"),
-                completed_at=data.get("completed_at"),
+            logger.info("[project %s] 转写第 %d 段: %s",
+                        project_id, rec.order + 1, rec.filename)
+            pipeline = get_backend()
+            result = pipeline.transcribe(
+                audio_path=str(audio_path),
+                language=rec.language,
+                return_embeddings=True,
             )
-            summarize_store[task_id] = job
+
+            store.save_recording_result(
+                project_id, rec.recording_id, result.to_dict(),
+                embeddings=getattr(pipeline, "last_embeddings", None),
+                durations=getattr(pipeline, "last_segment_durations", None),
+            )
+            rec.duration = result.duration
+            rec.state = TaskState.completed
+            rec.progress = 1.0
+            rec.completed_at = datetime.now(timezone.utc).isoformat()
+            rec.has_embeddings = bool(getattr(pipeline, "last_embeddings", None))
+            logger.info("[project %s] 第 %d 段完成: %d 段文本, %d 说话人",
+                        project_id, rec.order + 1, len(result.segments),
+                        result.num_speakers)
+
         except Exception as e:
-            logger.warning("Failed to load summarize meta %s: %s", meta_file, e)
-    logger.info("Loaded %d summarize jobs", len(summarize_store))
+            logger.exception("[rec %s] 转写失败", rec.recording_id)
+            rec.state = TaskState.failed
+            rec.error = str(e)
+            rec.progress = 1.0
 
+        store.update_state(project_id)
 
-def _process_summarize(job: SummarizeJob, reference_content: str | None):
-    """后台任务: 执行 AI 总结。"""
+    # ── 队列结束：统一说话人 → 合并文档 → 自动纪要 ──
     try:
-        job.state = TaskState.processing
-        job.progress = 0.1
-        _save_summarize_meta(job)
-        logger.info("[summarize %s] Processing started: preset=%s", job.job_id, job.preset)
+        store.unify_speakers(project_id)
+    except Exception:
+        logger.exception("[project %s] 跨录音说话人统一失败（不影响后续）", project_id)
 
-        def progress_cb(progress: float, message: str):
-            job.progress = progress
-            logger.debug("[summarize %s] %s (%.0f%%)", job.job_id, message, progress * 100)
+    try:
+        transcript = store.build_transcript(project_id)
+        store.save_transcript(project_id, transcript)
+        logger.info("[project %s] 合并文档已生成: %d 段, %d 说话人, %.1fs",
+                    project_id, len(transcript["segments"]),
+                    transcript["num_speakers"], transcript["duration"])
+    except Exception:
+        logger.exception("[project %s] 合并文档生成失败", project_id)
+        store.update_state(project_id)
+        return
 
-        # 获取音频文件名作为总结标题
-        task = task_store.get(job.task_id)
-        audio_title = ""
-        if task and task.filename:
-            audio_title = task.filename.rsplit(".", 1)[0] if "." in task.filename else task.filename
-
-        result = run_summarize(
-            task_id=job.task_id,
-            preset=job.preset,
-            audio_title=audio_title,
-            reference_content=reference_content,
-            include_intro=job.include_intro,
-            progress_callback=progress_cb,
-        )
-
-        now = datetime.now(timezone.utc).isoformat()
-        job.state = TaskState.completed
-        job.progress = 1.0
-        job.completed_at = now
-        _save_summarize_meta(job)
-        logger.info("[summarize %s] Completed: %d chars", job.job_id, len(result))
-
+    try:
+        _run_project_summary(project_id)
     except Exception as e:
-        logger.exception("[summarize %s] Failed: %s", job.job_id, e)
-        job.state = TaskState.failed
-        job.error = str(e)
-        _save_summarize_meta(job)
+        logger.exception("[project %s] 自动会议纪要失败", project_id)
+        p = store.get(project_id)
+        if p:
+            p.summary_state = TaskState.failed
+            p.summary_error = str(e)
+    finally:
+        store.update_state(project_id)
 
 
-@app.get("/api/summarize/presets")
-async def list_summarize_presets():
-    """列出可用的总结预设"""
-    return JSONResponse(content=get_preset_list())
+def _run_project_summary(project_id: str) -> None:
+    """生成会议纪要（在队列后台线程内串行执行）。"""
+    store = get_project_store()
+    proj = store.get(project_id)
+    if proj is None:
+        return
 
+    if not any(r.state == TaskState.completed for r in proj.recordings):
+        logger.warning("[project %s] 无成功转录的录音，跳过会议纪要", project_id)
+        proj.summary_state = TaskState.failed
+        proj.summary_error = "没有成功转录的录音"
+        return
 
-@app.post("/api/tasks/{task_id}/summarize")
-async def create_summarize(
-    task_id: str,
-    background_tasks: BackgroundTasks,
-    preset: str = Form(default="podcast_polish", description="预设: podcast_polish | meeting_summary"),
-    include_intro: bool = Form(default=True, description="参考材料作为节目介绍（仅播客预设）"),
-    reference: UploadFile | None = File(default=None, description="参考材料文件（可选）"),
-):
-    """创建 AI 总结任务（异步）"""
-    # 检查转录任务是否存在
-    task = task_store.get(task_id)
-    if task is None:
-        # 也检查磁盘
-        result_file = OUTPUT_DIR / f"{task_id}.json"
-        if not result_file.exists():
-            raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    from backend.meeting_summary import generate_meeting_summary
 
-    # 检查预设
-    if preset not in PRESETS:
-        raise HTTPException(status_code=400, detail=f"未知预设: {preset}. 可用: {list(PRESETS.keys())}")
+    proj.summary_state = TaskState.processing
+    proj.summary_progress = 0.05
+    proj.summary_error = None
+    store.update_state(project_id)
 
-    # 读取参考材料
-    reference_content = None
-    if reference:
-        raw = await reference.read()
-        try:
-            reference_content = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            reference_content = raw.decode("gbk", errors="replace")
-        logger.info("[summarize] Reference loaded: %s (%d chars)", reference.filename, len(reference_content))
+    def progress_cb(p: float, msg: str) -> None:
+        proj.summary_progress = max(0.0, min(1.0, p))
+        logger.debug("[project %s] 纪要 %s (%.0f%%)", project_id, msg, p * 100)
 
-    # 创建总结任务（替换已有的）
-    job_id = uuid.uuid4().hex[:12]
-    now = datetime.now(timezone.utc).isoformat()
-    job = SummarizeJob(
-        job_id=job_id,
-        task_id=task_id,
-        preset=preset,
-        state=TaskState.pending,
-        progress=0.0,
-        has_reference=reference_content is not None,
-        include_intro=include_intro,
-        created_at=now,
+    transcript = store.build_transcript(project_id)
+    summary_md = generate_meeting_summary(
+        project=proj,
+        transcript=transcript,
+        reference_content=store.get_reference(project_id),
+        progress_callback=progress_cb,
     )
-    summarize_store[task_id] = job
-    _save_summarize_meta(job)
 
-    # 提交后台任务
-    background_tasks.add_task(_process_summarize, job, reference_content)
-    logger.info("[summarize %s] Created for task %s: preset=%s", job_id, task_id, preset)
-
-    return JSONResponse(status_code=202, content=job.to_dict())
+    store.summary_path(project_id).write_text(summary_md, encoding="utf-8")
+    proj.summary_state = TaskState.completed
+    proj.summary_progress = 1.0
+    proj.summary_completed_at = datetime.now(timezone.utc).isoformat()
+    logger.info("[project %s] 会议纪要完成: %d 字符", project_id, len(summary_md))
 
 
-@app.get("/api/tasks/{task_id}/summarize")
-async def get_summarize_status(task_id: str):
-    """查询 AI 总结任务状态"""
-    job = summarize_store.get(task_id)
-    if job is None:
-        # 尝试从磁盘加载
-        meta_file = OUTPUT_DIR / f"{task_id}_summary_meta.json"
-        if meta_file.exists():
-            try:
-                with open(meta_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                job = SummarizeJob(
-                    job_id=data.get("job_id", ""),
-                    task_id=task_id,
-                    preset=data.get("preset", "podcast_polish"),
-                    state=TaskState(data.get("state", "completed")),
-                    progress=data.get("progress", 1.0),
-                    has_reference=data.get("has_reference", False),
-                    include_intro=data.get("include_intro", True),
-                    error=data.get("error"),
-                    created_at=data.get("created_at"),
-                    completed_at=data.get("completed_at"),
-                )
-                summarize_store[task_id] = job
-            except Exception:
-                pass
-
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"No summarize job for task: {task_id}")
-
-    return JSONResponse(content=job.to_dict())
+def _require_project(store, project_id: str):
+    proj = store.get(project_id)
+    if proj is None:
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+    return proj
 
 
-@app.get("/api/tasks/{task_id}/summarize/result")
-async def get_summarize_result(task_id: str):
-    """获取 AI 总结结果（markdown）"""
-    job = summarize_store.get(task_id)
-    if job is None or job.state != TaskState.completed:
-        # 检查磁盘
-        summary_file = OUTPUT_DIR / f"{task_id}_summary.md"
-        if not summary_file.exists():
-            if job is None:
-                raise HTTPException(status_code=404, detail="No summarize job found")
-            raise HTTPException(status_code=400, detail=f"Summarize not completed (state={job.state.value})")
-
-    summary_file = OUTPUT_DIR / f"{task_id}_summary.md"
-    if not summary_file.exists():
-        raise HTTPException(status_code=404, detail="Summary file not found")
-
-    # 获取原始文件名用于下载名
-    task = task_store.get(task_id)
-    filename = get_summary_filename(task.filename) if task else f"{task_id}_asr.md"
-
-    with open(summary_file, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    return JSONResponse(content={"summary": content, "filename": filename})
+@app.post("/api/projects")
+async def create_project(payload: dict):
+    """创建会议项目（文档），如「xx 会议」"""
+    try:
+        proj = get_project_store().create_project((payload or {}).get("name", ""))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(status_code=201, content=proj.to_dict())
 
 
-@app.get("/api/tasks/{task_id}/summarize/preview")
-async def preview_summarize_result(task_id: str):
-    """以 HTML 页面形式展示总结结果（Markdown 渲染）"""
-    job = summarize_store.get(task_id)
-    if job is None or job.state != TaskState.completed:
-        summary_file = OUTPUT_DIR / f"{task_id}_summary.md"
-        if not summary_file.exists():
-            raise HTTPException(status_code=404, detail="No summarize result found")
-        raise HTTPException(status_code=400, detail="Summarize not completed")
+@app.get("/api/projects")
+async def list_projects():
+    """列出所有会议项目"""
+    store = get_project_store()
+    return JSONResponse(content=[p.to_dict(include_recordings=False)
+                                 for p in store.list_projects()])
 
-    summary_file = OUTPUT_DIR / f"{task_id}_summary.md"
-    if not summary_file.exists():
-        raise HTTPException(status_code=404, detail="Summary file not found")
 
-    with open(summary_file, "r", encoding="utf-8") as f:
-        content = f.read()
+@app.get("/api/projects/{project_id}")
+async def get_project(project_id: str):
+    """查询项目详情（含录音队列状态）"""
+    store = get_project_store()
+    return JSONResponse(content=_require_project(store, project_id).to_dict())
 
-    # 获取音频文件名作为页面标题
-    task = task_store.get(task_id)
-    page_title = f"总结结果 — {task.filename}" if task else "AI 总结结果"
 
-    # 使用 JSON 编码安全地将内容嵌入 HTML
-    content_json = json.dumps(content, ensure_ascii=False)
+@app.patch("/api/projects/{project_id}")
+async def rename_project(project_id: str, payload: dict):
+    """重命名项目"""
+    try:
+        proj = get_project_store().rename(project_id, (payload or {}).get("name", ""))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse(content=proj.to_dict())
 
-    html = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{page_title}</title>
-<style>
-  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 24px 20px; background: #0f0f0f; color: #e0e0e0; line-height: 1.7; }}
-  h1 {{ color: #fff; border-bottom: 1px solid #333; padding-bottom: 12px; }}
-  h2 {{ color: #c9d1d9; margin-top: 28px; }}
-  h3 {{ color: #b0b8c4; }}
-  a {{ color: #58a6ff; }}
-  code {{ background: #1a1a2e; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }}
-  pre {{ background: #1a1a2e; padding: 16px; border-radius: 8px; overflow-x: auto; }}
-  pre code {{ background: none; padding: 0; }}
-  blockquote {{ border-left: 3px solid #333; margin-left: 0; padding-left: 16px; color: #8b949e; }}
-  hr {{ border: none; border-top: 1px solid #333; margin: 24px 0; }}
-  table {{ border-collapse: collapse; width: 100%; }}
-  th, td {{ border: 1px solid #333; padding: 8px 12px; text-align: left; }}
-  th {{ background: #161b22; }}
-  p {{ margin: 8px 0; }}
-</style>
-</head>
-<body>
-<div id="content"></div>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script>
-  const content = {content_json};
-  document.getElementById('content').innerHTML = marked.parse(content);
-</script>
-</body>
-</html>"""
 
-    return HTMLResponse(content=html)
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str):
+    """删除项目及其全部产物"""
+    try:
+        get_project_store().delete(project_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+    return JSONResponse(content={"deleted": project_id})
+
+
+@app.post("/api/projects/{project_id}/recordings")
+async def add_recordings(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(description="一个或多个音频文件"),
+    language: str = Form(default="zh", description="语种，作用于本批全部录音"),
+    start: bool = Form(default=True, description="是否立即启动串行队列"),
+):
+    """
+    一次上传多个录音到项目队列。
+
+    多个文件按上传顺序排队，后台**串行**转录，全部完成后自动生成会议纪要。
+    队列运行中再次上传会返回 409，避免并发争抢。
+    """
+    store = get_project_store()
+    proj = _require_project(store, project_id)
+    if not files:
+        raise HTTPException(status_code=400, detail="未收到任何音频文件")
+    if proj.state in (ProjectState.transcribing, ProjectState.summarizing):
+        raise HTTPException(status_code=409,
+                            detail="该项目队列正在运行，请等待完成后再添加")
+
+    created = []
+    for f in files:
+        content = await f.read()
+        if len(content) > MAX_UPLOAD_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{f.filename} 过大，单文件最大 {MAX_UPLOAD_SIZE // 1024 // 1024}MB")
+        filename = f.filename or "unknown.wav"
+        rec = store.add_recording(project_id, filename, language)
+        # 音频用 recording_id 作为 FileStore 的 task_id，便于按录音取回音频
+        get_file_store().save_file(content, filename, rec.recording_id)
+        created.append(rec)
+        logger.info("[project %s] 入队: %s (%.1f MB)",
+                    project_id, filename, len(content) / 1024 / 1024)
+
+    store.update_state(project_id)
+
+    if start and any(r.state == TaskState.pending for r in proj.recordings):
+        background_tasks.add_task(_run_project_queue, project_id)
+        logger.info("[project %s] 串行队列已提交（%d 段）", project_id, len(created))
+
+    return JSONResponse(
+        status_code=202,
+        content={"project": proj.to_dict(include_recordings=False),
+                 "added": [r.to_dict() for r in created]},
+    )
+
+
+@app.post("/api/projects/{project_id}/start")
+async def start_project_queue(project_id: str, background_tasks: BackgroundTasks):
+    """启动/继续该项目队列（用于失败重试或分批上传后统一启动）"""
+    store = get_project_store()
+    proj = _require_project(store, project_id)
+    if not any(r.state == TaskState.pending for r in proj.recordings):
+        raise HTTPException(status_code=400, detail="没有待处理的录音")
+    background_tasks.add_task(_run_project_queue, project_id)
+    return JSONResponse(status_code=202,
+                        content=proj.to_dict(include_recordings=False))
+
+
+@app.get("/api/projects/{project_id}/recordings/{recording_id}/audio")
+async def get_recording_audio(project_id: str, recording_id: str):
+    """获取某段录音的音频（用于回放定位到具体片段）"""
+    store = get_project_store()
+    _require_project(store, project_id)
+    path = get_file_store().get_file_path(recording_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    name = get_file_store().get_original_name(recording_id) or "audio"
+    suffix = path.suffix.lower()
+    media = {".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+             ".flac": "audio/flac"}.get(suffix, "audio/wav")
+    return FileResponse(path=str(path), media_type=media, filename=name)
+
+
+@app.get("/api/projects/{project_id}/recordings/{recording_id}/transcript")
+async def get_recording_transcript(project_id: str, recording_id: str):
+    """获取单段录音的原始转录（本地时间轴，用于单文件回放）"""
+    store = get_project_store()
+    _require_project(store, project_id)
+    result = store.load_recording_result(project_id, recording_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Recording result not found")
+    return JSONResponse(content=result)
+
+
+@app.get("/api/projects/{project_id}/transcript")
+async def get_project_transcript(project_id: str):
+    """获取合并后的会议转录文档（跨录音统一时间轴）"""
+    store = get_project_store()
+    _require_project(store, project_id)
+
+    p = store._project_dir(project_id) / "transcript.json"
+    if not p.exists():
+        transcript = store.build_transcript(project_id)
+        if not transcript["segments"]:
+            raise HTTPException(status_code=400, detail="尚无已完成的录音")
+        store.save_transcript(project_id, transcript)
+        return JSONResponse(content=transcript)
+
+    with open(p, "r", encoding="utf-8") as f:
+        return JSONResponse(content=json.load(f))
+
+
+@app.patch("/api/projects/{project_id}/transcript")
+async def update_project_transcript(project_id: str, payload: dict):
+    """
+    保存对合并文档的编辑（校对文本、说话人改名）。
+
+    接受 ``{"segments":[{"id":..., "text":..., "speaker":...}], "speaker_map":{...}}``，
+    只更新传入的字段，未提及的段落保持原样。
+    """
+    store = get_project_store()
+    proj = _require_project(store, project_id)
+
+    p = store._project_dir(project_id) / "transcript.json"
+    if not p.exists():
+        raise HTTPException(status_code=400, detail="合并文档尚未生成")
+
+    with open(p, "r", encoding="utf-8") as f:
+        transcript = json.load(f)
+
+    edits = {s.get("id"): s for s in (payload or {}).get("segments", [])
+             if isinstance(s, dict) and s.get("id")}
+
+    updated = 0
+    for seg in transcript.get("segments", []):
+        e = edits.get(seg.get("id"))
+        if not e:
+            continue
+        for field in ("text", "speaker"):
+            if field in e and e[field] != seg.get(field):
+                seg[field] = e[field]
+                updated += 1
+
+    speaker_map = (payload or {}).get("speaker_map")
+    if isinstance(speaker_map, dict):
+        transcript["speaker_map"] = speaker_map
+
+    store.save_transcript(project_id, transcript)
+    logger.info("[project %s] 合并文档已更新 %d 处", project_id, updated)
+    return JSONResponse(content={"updated": updated, "transcript": transcript})
+
+
+@app.get("/api/projects/{project_id}/summary")
+async def get_project_summary(project_id: str):
+    """获取会议纪要（Markdown + 状态）"""
+    store = get_project_store()
+    proj = _require_project(store, project_id)
+    content = store.get_summary(project_id)
+    return JSONResponse(content={
+        "project_id": project_id,
+        "state": proj.summary_state.value,
+        "progress": proj.summary_progress,
+        "error": proj.summary_error,
+        "summary": content,
+        "has_summary": content is not None,
+    })
+
+
+@app.post("/api/projects/{project_id}/summary/regenerate")
+async def regenerate_project_summary(project_id: str, background_tasks: BackgroundTasks):
+    """重新生成会议纪要（改了参考材料或对转录校对后使用）"""
+    store = get_project_store()
+    proj = _require_project(store, project_id)
+    if not any(r.state == TaskState.completed for r in proj.recordings):
+        raise HTTPException(status_code=400, detail="没有已完成的录音")
+    if proj.summary_state == TaskState.processing:
+        raise HTTPException(status_code=409, detail="纪要正在生成中")
+
+    def _job() -> None:
+        try:
+            _run_project_summary(project_id)
+        except Exception as e:
+            logger.exception("[project %s] 重新生成纪要失败", project_id)
+            p = store.get(project_id)
+            if p:
+                p.summary_state = TaskState.failed
+                p.summary_error = str(e)
+        finally:
+            store.update_state(project_id)
+
+    background_tasks.add_task(_job)
+    return JSONResponse(status_code=202,
+                        content={"project_id": project_id, "state": "processing"})
+
+
+@app.post("/api/projects/{project_id}/reference")
+async def upload_project_reference(project_id: str, reference: UploadFile = File(...)):
+    """上传参考材料（议程、参会名单等），供会议纪要使用"""
+    store = get_project_store()
+    _require_project(store, project_id)
+
+    raw = await reference.read()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("gbk", errors="replace")
+    store.save_reference(project_id, reference.filename or "reference.md", text)
+    return JSONResponse(content={"saved": True, "chars": len(text),
+                                 "name": reference.filename})
+
+
+@app.get("/api/projects/{project_id}/export")
+async def export_project(project_id: str, fmt: str = "md"):
+    """
+    导出会议成果。
+
+    fmt=md  → 会议纪要 Markdown
+    fmt=txt → 纯文本转录（[时间] 说话人: 内容）
+    fmt=json→ 合并转录 JSON
+    """
+    store = get_project_store()
+    proj = _require_project(store, project_id)
+    # 去掉文件系统非法字符（含全角冒号，中文会议名里很常见）
+    bad = r'\/:*?"<>|：＊？＂＜＞｜'
+    safe_name = "".join(c for c in proj.name if c not in bad).strip() or "meeting"
+
+    if fmt == "md":
+        content = store.get_summary(project_id)
+        if content is None:
+            raise HTTPException(status_code=404, detail="会议纪要尚未生成")
+        return JSONResponse(content={"filename": f"{safe_name}_纪要.md",
+                                     "content": content})
+    if fmt == "json":
+        transcript = store.build_transcript(project_id)
+        return JSONResponse(content={"filename": f"{safe_name}_转录.json",
+                                     "content": json.dumps(transcript,
+                                                           ensure_ascii=False, indent=2)})
+    if fmt == "txt":
+        transcript = store.build_transcript(project_id)
+        lines = []
+        for seg in transcript.get("segments", []):
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+            s = seg.get("start", 0)
+            h, m, sec = int(s // 3600), int((s % 3600) // 60), int(s % 60)
+            lines.append(f"[{h:02d}:{m:02d}:{sec:02d}] {seg.get('speaker', '')}: {text}")
+        return JSONResponse(content={"filename": f"{safe_name}_转录.txt",
+                                     "content": "\n".join(lines)})
+
+    raise HTTPException(status_code=400, detail=f"不支持的导出格式: {fmt}")
 
 
 # ── 静态文件服务 (前端 SPA) ──────────────────────────────────

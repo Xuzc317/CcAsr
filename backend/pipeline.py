@@ -148,6 +148,10 @@ class ASRPipeline:
         self._asr_model: Optional[AutoModel] = None
         self._spk_model: Optional[AutoModel] = None
 
+        # 仅当 transcribe(return_embeddings=True) 时填充
+        self.last_embeddings: Optional[list[np.ndarray]] = None
+        self.last_segment_durations: Optional[list[float]] = None
+
     def load(self) -> None:
         """加载三个模型 (首次较慢, 约 30-60s, 后续走缓存)"""
         if self._vad_model is not None:
@@ -211,6 +215,7 @@ class ASRPipeline:
         audio_path: Union[str, Path],
         language: str = "zh",
         batch_size_s: int = 1200,
+        return_embeddings: bool = False,
     ) -> TranscriptionResult:
         """
         转写音频文件, 返回结构化结果
@@ -219,10 +224,16 @@ class ASRPipeline:
             audio_path: 音频文件路径 (支持 wav/mp3/m4a/flac)
             language: 语种 (auto/zh/en/yue/ja/ko)
             batch_size_s: ASR 批处理秒数 (大内存可拉高到 1200+)
+            return_embeddings: 为 True 时把声纹向量暂存到
+                ``self.last_embeddings`` / ``self.last_segment_durations``，
+                供**项目级跨录音说话人统一**使用（多段录音拼接成同一会议时，
+                各段独立聚类会导致同一个人在不同录音里 ID 不同）
 
         Returns:
             TranscriptionResult
         """
+        self.last_embeddings = None
+        self.last_segment_durations = None
         self.load()
         audio_path = Path(audio_path)
         if not audio_path.exists():
@@ -280,6 +291,7 @@ class ASRPipeline:
                 raw_segments.append({
                     "start_ms": start_ms,
                     "end_ms": end_ms,
+                    "duration_s": duration_s,   # 供项目级聚类过滤过短片段
                     "tags": tags,
                     "emb_idx": len(embeddings) if emb is not None else None,
                 })
@@ -315,6 +327,12 @@ class ASRPipeline:
             # Step 3: 声纹聚类
             logger.info("Clustering %d speaker embeddings...", len(embeddings))
             speaker_labels = self._cluster_speakers(embeddings, len(raw_segments), raw_segments)
+
+            # 暂存声纹向量与各段时长，供项目级跨录音统一聚类
+            # （必须在 del embeddings 之前复制）
+            if return_embeddings:
+                self.last_embeddings = [np.asarray(e).copy() for e in embeddings]
+                self.last_segment_durations = [s.get("duration_s", 0.0) for s in raw_segments]
 
             # 聚类完成，释放 embeddings
             del embeddings
@@ -445,6 +463,71 @@ class ASRPipeline:
         return None
 
     @staticmethod
+    def cluster_embeddings(
+        embeddings: list,
+        max_speakers: int = 10,
+    ) -> list[str]:
+        """
+        对一组声纹向量做聚类, 返回与输入等长的 speaker label 列表。
+
+        供**项目级跨录音统一聚类**复用（多段录音拼成同一会议时，
+        各段独立聚类会把同一个人编成不同 ID）。
+        与 ``_cluster_speakers`` 使用完全相同的算法，保证结果口径一致。
+        """
+        n = len(embeddings)
+        if n < 2:
+            return ["SPEAKER_0"] * n
+
+        from sklearn.cluster import SpectralClustering
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        X = np.vstack([np.asarray(e).reshape(-1) for e in embeddings]).astype(np.float64)
+        if not np.isfinite(X).all():
+            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        norms = np.linalg.norm(X, axis=1, keepdims=True)
+        X = X / np.maximum(norms, 1e-12)
+
+        affinity = (cosine_similarity(X) + 1.0) / 2.0
+        np.fill_diagonal(affinity, 1.0)
+
+        k = ASRPipeline._estimate_speaker_count(affinity, max_speakers)
+        labels = SpectralClustering(
+            n_clusters=k, affinity="precomputed", random_state=42
+        ).fit_predict(affinity)
+        return [f"SPEAKER_{int(c)}" for c in labels]
+
+    @staticmethod
+    def _cluster_speakers_static(
+        embeddings: list[np.ndarray],
+        num_segments: int,
+        raw_segments: list[dict],
+        max_speakers: int = 10,
+    ) -> list[str]:
+        """
+        与 ``_cluster_speakers`` 等价的无实例版本（供项目级统一聚类调用）。
+
+        语义完全一致：返回长度 ``num_segments`` 的标签列表，
+        无 embedding 的片段继承前一段的标签。
+        """
+        labels = ["SPEAKER_0"] * num_segments
+        if len(embeddings) < 2:
+            return labels
+
+        try:
+            cluster_labels = ASRPipeline.cluster_embeddings(embeddings, max_speakers)
+            emb_idx = 0
+            for i, seg in enumerate(raw_segments):
+                if seg.get("emb_idx") is not None:
+                    labels[i] = cluster_labels[emb_idx]
+                    emb_idx += 1
+                elif i > 0:
+                    labels[i] = labels[i - 1]
+        except Exception as e:
+            logger.error("项目级声纹聚类失败, 降级为单一说话人: %s", e, exc_info=True)
+
+        return labels
+
+    @staticmethod
     def _estimate_speaker_count(affinity: np.ndarray, max_speakers: int) -> int:
         """
         用归一化 Laplacian 的**特征间隙 (eigengap)** 估计说话人数。
@@ -488,12 +571,31 @@ class ASRPipeline:
             logger.warning("特征值求解失败, 退化为 2 个说话人: %s", e)
             return 2
 
-        # 补上恒为 0 的 λ0 (ARPACK 只返回 k 个最小的, 此处显式排序)
-        eigvals = np.sort(np.append(eigvals, 0.0))[:k_max + 1]
+        # 归一化 Laplacian 的最小特征值恒为 0。
+        # ARPACK 通常已经返回了它，直接 append 会产生**重复的 0**，
+        # 使整个谱右移一位、所有间隙下标失效（实测会把 3 簇误判为 2 簇）。
+        # 因此仅在确实缺失时才补 0。
+        eigvals = np.sort(np.asarray(eigvals, dtype=float))
+        if eigvals.size == 0 or eigvals[0] > 1e-8:
+            eigvals = np.concatenate(([0.0], eigvals))
+        eigvals = eigvals[:k_max + 1]
         gaps = np.diff(eigvals)
 
-        # k = argmax(λ_k - λ_{k-1}) + 1, 即第 k 个间隙最大 → k+1 个簇
-        k = int(np.argmax(gaps)) + 1
+        # eigengap 判据：k = (最大间隙在 gaps 中的下标) + 1
+        #
+        # 必须跳过 gaps[0] = λ1 - λ0：λ0 恒为 0，图连通时 λ1 明显大于 0，
+        # 该间隙永远最大（实测合成数据 0.86 vs 次大 0.15），
+        # 不跳过就会把任何数据都判成 k=1。
+        #
+        # 下标换算：argmax 返回的是「切片 gaps[1:] 内」的下标，
+        # 还原到 gaps 需 +1，再因 k = gap_index + 1，合计 +2。
+        #
+        # 实测校准：
+        #   合成 3 簇: λ=[0,.86,.90,1.05,..] gaps=[.86,.041,.15,..]
+        #              → argmax(gaps[1:])=1 → k=3 ✅
+        #   合成 2 簇: gaps=[.785,.275,.001,..] → argmax=0 → k=2 ✅
+        #   真实双人对话: gaps=[.918,.044,.025,..] → argmax=0 → k=2 ✅
+        k = int(np.argmax(gaps[1:])) + 2
         k = max(2, min(k, k_max))
         logger.debug("eigengap 判据: λ=%s, gaps=%s → k=%d",
                      np.round(eigvals, 4).tolist(), np.round(gaps, 4).tolist(), k)

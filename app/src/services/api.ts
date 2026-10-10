@@ -1,130 +1,179 @@
-import type { Task, TranscriptionResult, Segment, SummarizePreset, SummarizeJob } from '../types';
+// ── CcAsr API 客户端（会议项目制）────────────────────────────
+
+import type {
+  Project, MergedTranscript, SummaryState, StructuredSummary,
+} from '../types';
 
 export const API_BASE = '/api';
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`API error ${response.status}: ${error}`);
+    let detail = await response.text();
+    try {
+      const parsed = JSON.parse(detail);
+      if (parsed?.detail) {
+        detail = typeof parsed.detail === 'string'
+          ? parsed.detail : JSON.stringify(parsed.detail);
+      }
+    } catch { /* 非 JSON，按原文显示 */ }
+    throw new Error(detail || `HTTP ${response.status}`);
   }
   return response.json();
 }
 
-/** 后端 TaskStatus.to_dict() 字段 → 前端 Task 类型 */
-function mapTask(raw: Record<string, unknown>): Task {
-  return {
-    id: raw.task_id as string,
-    filename: raw.filename as string,
-    status: raw.state as Task['status'],
-    progress: raw.progress as number,
-    createdAt: raw.created_at as string,
-    completedAt: (raw.completed_at as string) ?? null,
-  };
+const jsonPost = (body: unknown): RequestInit => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+// ── 项目管理 ─────────────────────────────────────────────────
+
+export async function createProject(name: string): Promise<Project> {
+  return request<Project>(`${API_BASE}/projects`, jsonPost({ name }));
 }
 
-/** 后端 Segment → 前端 Segment（添加 id + isModified） */
-function mapSegment(raw: Record<string, unknown>, index: number): Segment {
-  return {
-    id: (raw.id as string) || `seg-${index}`,
-    speaker: (raw.speaker as string) || 'SPEAKER_0',
-    start: (raw.start as number) || 0,
-    end: (raw.end as number) || 0,
-    text: (raw.text as string) || '',
-    rawText: (raw.raw_text as string) || '',
-    emotion: (raw.emotion as string) || 'UNKNOWN',
-    language: (raw.language as string) || 'unknown',
-    events: (raw.events as string[]) || [],
-    isModified: false,
-  };
+export async function listProjects(): Promise<Project[]> {
+  return request<Project[]>(`${API_BASE}/projects`);
 }
 
-/** 后端 TranscriptionResult → 前端 TranscriptionResult */
-function mapResult(raw: Record<string, unknown>): TranscriptionResult {
-  const rawSegments = (raw.segments as Record<string, unknown>[]) || [];
-  const segments = rawSegments.map((s, i) => mapSegment(s, i));
-
-  // 从 segments 构建 speakerMap（首次出现的 speaker ID 映射为自身）
-  const speakerMap: Record<string, string> = {};
-  for (const seg of segments) {
-    if (!(seg.speaker in speakerMap)) {
-      speakerMap[seg.speaker] = seg.speaker;
-    }
-  }
-
-  return {
-    audioFile: (raw.audio_file as string) || '',
-    duration: (raw.duration as number) || 0,
-    numSpeakers: (raw.num_speakers as number) || 0,
-    segments,
-    peaks: (raw.peaks as number[]) || [],
-    speakerMap,
-  };
+export async function getProject(projectId: string): Promise<Project> {
+  return request<Project>(`${API_BASE}/projects/${projectId}`);
 }
 
-export async function uploadAudio(file: File, language: string = 'zh'): Promise<Task> {
-  const formData = new FormData();
-  formData.append('file', file);
-
-  const url = new URL(`${API_BASE}/tasks`, window.location.origin);
-  url.searchParams.set('language', language);
-
-  const raw = await request<Record<string, unknown>>(url.toString(), {
-    method: 'POST',
-    body: formData,
+export async function renameProject(projectId: string, name: string): Promise<Project> {
+  return request<Project>(`${API_BASE}/projects/${projectId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
   });
-  return mapTask(raw);
 }
 
-export async function getTasks(): Promise<Task[]> {
-  const rawList = await request<Record<string, unknown>[]>(`${API_BASE}/tasks`);
-  return rawList.map(mapTask);
+export async function deleteProject(projectId: string): Promise<void> {
+  await request<unknown>(`${API_BASE}/projects/${projectId}`, { method: 'DELETE' });
 }
 
-export async function getTask(taskId: string): Promise<Task> {
-  const raw = await request<Record<string, unknown>>(`${API_BASE}/tasks/${taskId}`);
-  return mapTask(raw);
+// ── 录音上传（支持一次多个）──────────────────────────────────
+
+export interface AddRecordingsResult {
+  project: Project;
+  added: { recording_id: string; filename: string; order: number }[];
 }
 
-export async function getTaskResult(taskId: string): Promise<TranscriptionResult> {
-  const raw = await request<Record<string, unknown>>(`${API_BASE}/tasks/${taskId}/result`);
-  return mapResult(raw);
+export async function addRecordings(
+  projectId: string,
+  files: File[],
+  language: string = 'zh',
+  start: boolean = true,
+): Promise<AddRecordingsResult> {
+  const form = new FormData();
+  for (const f of files) form.append('files', f);
+  form.append('language', language);
+  form.append('start', String(start));
+
+  return request<AddRecordingsResult>(
+    `${API_BASE}/projects/${projectId}/recordings`,
+    { method: 'POST', body: form },
+  );
 }
 
-// ── AI 总结 API ──────────────────────────────────────────────
-
-export async function getSummarizePresets(): Promise<SummarizePreset[]> {
-  return await request<SummarizePreset[]>(`${API_BASE}/summarize/presets`);
+export async function startQueue(projectId: string): Promise<Project> {
+  return request<Project>(`${API_BASE}/projects/${projectId}/start`, { method: 'POST' });
 }
 
-export async function createSummarize(
-  taskId: string,
-  preset: string,
-  referenceFile: File | null,
-  includeIntro: boolean = true,
-): Promise<SummarizeJob> {
-  const formData = new FormData();
-  formData.append('preset', preset);
-  formData.append('include_intro', String(includeIntro));
-  if (referenceFile) {
-    formData.append('reference', referenceFile);
+// ── 转录文档 ─────────────────────────────────────────────────
+
+export async function getTranscript(projectId: string): Promise<MergedTranscript> {
+  return request<MergedTranscript>(`${API_BASE}/projects/${projectId}/transcript`);
+}
+
+export async function saveTranscriptEdits(
+  projectId: string,
+  payload: {
+    segments: { id: string; text?: string; speaker?: string }[];
+    speaker_map?: Record<string, string>;
+  },
+): Promise<{ updated: number }> {
+  return request<{ updated: number }>(
+    `${API_BASE}/projects/${projectId}/transcript`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+/** 单段录音的音频 URL（用于回放定位） */
+export function recordingAudioUrl(projectId: string, recordingId: string): string {
+  return `${API_BASE}/projects/${projectId}/recordings/${recordingId}/audio`;
+}
+
+// ── 会议纪要 ─────────────────────────────────────────────────
+
+export async function getSummary(projectId: string): Promise<SummaryState> {
+  return request<SummaryState>(`${API_BASE}/projects/${projectId}/summary`);
+}
+
+export async function regenerateSummary(projectId: string): Promise<unknown> {
+  return request<unknown>(
+    `${API_BASE}/projects/${projectId}/summary/regenerate`, { method: 'POST' },
+  );
+}
+
+export async function uploadReference(projectId: string, file: File): Promise<unknown> {
+  const form = new FormData();
+  form.append('reference', file);
+  return request<unknown>(`${API_BASE}/projects/${projectId}/reference`,
+    { method: 'POST', body: form });
+}
+
+// ── 导出 ─────────────────────────────────────────────────────
+
+export async function exportProject(
+  projectId: string, fmt: 'md' | 'txt' | 'json',
+): Promise<{ filename: string; content: string }> {
+  return request<{ filename: string; content: string }>(
+    `${API_BASE}/projects/${projectId}/export?fmt=${fmt}`,
+  );
+}
+
+export function downloadText(content: string, filename: string, mime = 'text/plain') {
+  const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ── 纪要结构化数据解析 ───────────────────────────────────────
+
+const STRUCT_RE = /<!--\s*CCASR_STRUCTURED_SUMMARY\s*([\s\S]*?)\s*-->/;
+
+/**
+ * 从纪要 Markdown 中提取内嵌的结构化 JSON。
+ *
+ * 后端把结构化 blocks 以 HTML 注释形式内嵌，前端优先用它渲染组件；
+ * 解析失败返回 null，调用方回退为 Markdown 渲染（优雅降级）。
+ */
+export function parseStructuredSummary(markdown: string): StructuredSummary | null {
+  const m = STRUCT_RE.exec(markdown || '');
+  if (!m) return null;
+  try {
+    const data = JSON.parse(m[1]);
+    if (data && Array.isArray(data.blocks)) return data as StructuredSummary;
+  } catch {
+    /* 交给调用方降级 */
   }
-
-  const response = await fetch(`${API_BASE}/tasks/${taskId}/summarize`, {
-    method: 'POST',
-    body: formData,
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`API error ${response.status}: ${error}`);
-  }
-  return response.json();
+  return null;
 }
 
-export async function getSummarizeStatus(taskId: string): Promise<SummarizeJob> {
-  return await request<SummarizeJob>(`${API_BASE}/tasks/${taskId}/summarize`);
-}
-
-export async function getSummarizeResult(taskId: string): Promise<{ summary: string; filename: string }> {
-  return await request<{ summary: string; filename: string }>(`${API_BASE}/tasks/${taskId}/summarize/result`);
+/** 取出纪要正文（去掉内嵌的结构化注释与降级提示） */
+export function summaryBodyMarkdown(markdown: string): string {
+  return (markdown || '').replace(STRUCT_RE, '').trim();
 }

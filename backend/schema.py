@@ -17,6 +17,132 @@ class TaskState(str, Enum):
     failed = "failed"
 
 
+class ProjectState(str, Enum):
+    """会议项目整体状态"""
+    draft = "draft"              # 已建项目，尚未添加录音
+    transcribing = "transcribing"  # 队列处理中（串行转录多段录音）
+    summarizing = "summarizing"  # 全部转录完成，正在生成会议总结
+    completed = "completed"      # 转录 + 总结均完成
+    failed = "failed"            # 存在失败录音且无法继续
+
+
+@dataclass
+class Recording:
+    """会议项目中的一段录音（对应一次转录任务）"""
+    recording_id: str
+    project_id: str
+    filename: str                      # 原始文件名
+    order: int = 0                     # 项目内顺序（决定拼接顺序）
+    state: TaskState = TaskState.pending
+    progress: float = 0.0
+    duration: float = 0.0              # 音频时长（秒）
+    language: str = "zh"
+    error: Optional[str] = None
+    created_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    has_embeddings: bool = False       # 是否已保存声纹向量（供项目级统一聚类）
+
+    def to_dict(self) -> dict:
+        d = {
+            "recording_id": self.recording_id,
+            "project_id": self.project_id,
+            "filename": self.filename,
+            "order": self.order,
+            "state": self.state.value,
+            "progress": self.progress,
+            "duration": self.duration,
+            "language": self.language,
+        }
+        if self.error:
+            d["error"] = self.error
+        if self.created_at:
+            d["created_at"] = self.created_at
+        if self.completed_at:
+            d["completed_at"] = self.completed_at
+        return d
+
+
+@dataclass
+class Project:
+    """会议项目 — 一个文档（如「xx 会议」）可包含多段录音"""
+    project_id: str
+    name: str
+    recordings: List[Recording] = field(default_factory=list)
+    state: ProjectState = ProjectState.draft
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    # 会议总结状态
+    summary_state: TaskState = TaskState.pending   # 总结仅在全部转录完成后启动
+    summary_progress: float = 0.0
+    summary_error: Optional[str] = None
+    summary_completed_at: Optional[str] = None
+    # 提示词 / 参考材料
+    reference_name: Optional[str] = None
+    has_reference: bool = False
+
+    @property
+    def total_duration(self) -> float:
+        return sum(r.duration for r in self.recordings)
+
+    @property
+    def done_count(self) -> int:
+        return sum(1 for r in self.recordings
+                   if r.state in (TaskState.completed, TaskState.failed))
+
+    @property
+    def failed_count(self) -> int:
+        return sum(1 for r in self.recordings if r.state == TaskState.failed)
+
+    @property
+    def all_finished(self) -> bool:
+        return bool(self.recordings) and all(
+            r.state in (TaskState.completed, TaskState.failed)
+            for r in self.recordings
+        )
+
+    @property
+    def progress(self) -> float:
+        """整体进度：各录音平均进度 + 总结阶段权重"""
+        if not self.recordings:
+            return 0.0
+        base = sum(r.progress for r in self.recordings) / len(self.recordings)
+        # 转录占总进度 80%，总结占 20%
+        if self.summary_state == TaskState.completed:
+            return 1.0
+        if self.summary_state == TaskState.processing:
+            return 0.8 + 0.2 * self.summary_progress
+        return 0.8 * base
+
+    def to_dict(self, include_recordings: bool = True) -> dict:
+        d = {
+            "project_id": self.project_id,
+            "name": self.name,
+            "state": self.state.value,
+            "progress": round(self.progress, 4),
+            "recording_count": len(self.recordings),
+            "done_count": self.done_count,
+            "failed_count": self.failed_count,
+            "total_duration": round(self.total_duration, 2),
+            "summary_state": self.summary_state.value,
+            "summary_progress": round(self.summary_progress, 4),
+            "has_summary": self.summary_state == TaskState.completed,
+            "has_reference": self.has_reference,
+        }
+        if self.reference_name:
+            d["reference_name"] = self.reference_name
+        if self.summary_error:
+            d["summary_error"] = self.summary_error
+        if self.created_at:
+            d["created_at"] = self.created_at
+        if self.updated_at:
+            d["updated_at"] = self.updated_at
+        if self.summary_completed_at:
+            d["summary_completed_at"] = self.summary_completed_at
+        if include_recordings:
+            d["recordings"] = [r.to_dict() for r in self.recordings]
+        return d
+
+
 @dataclass
 class SummarizeJob:
     """AI 总结任务"""
