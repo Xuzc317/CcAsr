@@ -2,6 +2,21 @@
 
 ## [未发布]
 
+### 测试
+
+- `backend/tests/test_meeting_summary.py` — 会议纪要管道验证（注入假 LLM 客户端，
+  除网络外全链路真实）：正常 JSON / 代码围栏包裹 / 前后夹带解释文字 /
+  两次都不可解析时降级 / 首次坏重试后正常，共 5 个场景
+- `app/tests/frontend_verify.mjs` — 前端纯函数验证（`npm run test:fe`）：
+  后端结构化产出能否被前端还原、Markdown 降级路径、LLM 内容的 XSS 转义、
+  时间格式化、说话人配色稳定性，共 24 项断言
+- `backend/tests/acceptance_e2e.py` — 走真实 HTTP 的端到端验收脚本
+
+### 变更
+
+- `meeting_summary.py` 的 LLM 客户端改为模块级导入，并暴露
+  `set_llm_client_factory()` 注入点，便于测试替身（也避免每次调用重复 import）
+
 ### 新增 — 会议项目工作台
 
 架构从「单文件转录工具」重构为「会议项目制」，一个会议 = 一个文档。

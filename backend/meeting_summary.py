@@ -22,9 +22,20 @@ import logging
 import re
 from typing import Optional
 
+from openai import OpenAI
+
 from backend.config import env
 
 logger = logging.getLogger("ccasr.meeting_summary")
+
+# LLM 客户端工厂：模块级持有，便于单测注入替身（也避免每次调用重复 import）
+_llm_client_factory = OpenAI
+
+
+def set_llm_client_factory(factory) -> None:
+    """替换 LLM 客户端工厂（仅用于测试注入）。"""
+    global _llm_client_factory
+    _llm_client_factory = factory
 
 # 单次请求送给 LLM 的最大转录字符数（超出则分段摘要后再汇总）
 MAX_TRANSCRIPT_CHARS = 120_000
@@ -346,8 +357,6 @@ def generate_meeting_summary(
 
     report(0.25, "正在调用 LLM 生成纪要…")
 
-    from openai import OpenAI
-
     api_base = env("LLM_API_BASE", "")
     api_key = env("LLM_API_KEY", "")
     model = env("LLM_MODEL", "deepseek-chat")
@@ -357,7 +366,7 @@ def generate_meeting_summary(
             "（以及 CCASR_LLM_API_BASE / CCASR_LLM_MODEL）"
         )
 
-    client = OpenAI(api_key=api_key, base_url=api_base)
+    client = _llm_client_factory(api_key=api_key, base_url=api_base)
     user_prompt = _build_user_prompt(
         project_name=project.name,
         transcript_text=text,

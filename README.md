@@ -222,6 +222,22 @@ CcAsr/
 └── pyproject.toml        # Python 依赖
 ```
 
+## 测试
+
+```bash
+# 后端：会议纪要管道（注入假 LLM，不消耗额度、不依赖网络）
+.venv\Scripts\python.exe backend\tests\test_meeting_summary.py
+
+# 前端：结构化解析 / 降级路径 / XSS 转义 / 时间格式化
+cd app && npm run test:fe
+
+# 端到端验收（需后端已启动；会用 samples/ 里的音频真实跑一遍）
+.venv\Scripts\python.exe backend\tests\acceptance_e2e.py
+```
+
+> 纪要相关的测试通过 `set_llm_client_factory()` 注入假客户端，
+> 因此**不需要 API key** 也能验证解析、清洗与降级逻辑。
+
 ## 常见问题
 
 **Q: 模型加载很慢？**
