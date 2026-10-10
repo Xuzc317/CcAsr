@@ -21,6 +21,19 @@
 
 脚本归档为 `backend/tests/real_meeting_two_parts.py`，可复跑。
 
+### 验证 — 纪要组件契约三方一致
+
+会议纪要的 block 类型在三处必须严格对齐，已核对**完全一致（各 8 种）**：
+
+| 位置 | 内容 |
+|---|---|
+| 后端白名单 `meeting_summary.BLOCK_TYPES` | summary / columns / table / timeline / steps / todo / bullets / text |
+| 前端类型 `types/index.ts` 的联合类型 | 同上 8 种 |
+| 前端渲染 `SummaryView.tsx` 的 switch case | 同上 8 种 |
+
+后端会对 LLM 返回的非法类型做清洗（实测 `flowchart` 被丢弃），
+因此 LLM 即使不守 schema 也不会让前端崩。
+
 ### 新增 — 多语种 ASR 路由（需求 5）
 
 - 新增 `backend/whisper_backend.py`：faster-whisper（CTranslate2）本地多语种后端
