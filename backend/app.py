@@ -48,6 +48,17 @@ if DEBUG:
 # ── 常量 ──────────────────────────────────────────────────────
 MAX_UPLOAD_SIZE = 500 * 1024 * 1024  # 单文件 500MB
 
+# 测试用：把 LLM 换成假客户端，仅当 CCASR_LLM_FAKE=1 时生效
+# （用于在没有真实 API key 的情况下验证纪要全链路，绝不影响正常部署）
+LLM_FAKE = False
+try:
+    from backend.fake_llm import enable_if_requested as _enable_fake_llm
+    LLM_FAKE = _enable_fake_llm()
+except Exception as _e:  # 假客户端不可用不应影响服务启动
+    logger.warning("加载假 LLM 客户端失败（忽略）: %s", _e)
+if LLM_FAKE:
+    logger.warning("⚠ 已启用假 LLM 客户端（CCASR_LLM_FAKE=1）—— 仅用于测试！")
+
 app = FastAPI(
     title="CcAsr",
     description="离线语音转文字 + 声纹识别 + 会议纪要",
@@ -123,6 +134,7 @@ async def health():
                            else "legacy(affinity=cosine)",
         },
         "asr_routing": describe_routing(),
+        "llm_fake": LLM_FAKE,
         "memory": {"rss_mb": round(rss_mb), "mps_allocated_mb": round(mps_alloc)},
     }
 
@@ -244,6 +256,14 @@ def _run_project_summary(project_id: str) -> None:
         return
 
     from backend.meeting_summary import generate_meeting_summary
+
+    # 测试用假客户端：在这里再确认一次。uvicorn 热重载会重新导入
+    # meeting_summary，把模块级工厂重置回 OpenAI，仅靠启动时注入会失效。
+    try:
+        from backend.fake_llm import enable_if_requested as _fake
+        _fake()
+    except Exception:
+        pass
 
     proj.summary_state = TaskState.processing
     proj.summary_progress = 0.05

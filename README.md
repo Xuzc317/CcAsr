@@ -265,15 +265,24 @@ CcAsr/
 # 后端：会议纪要管道（注入假 LLM，不消耗额度、不依赖网络）
 .venv\Scripts\python.exe backend\tests\test_meeting_summary.py
 
+# 后端：ASR 路由判定
+.venv\Scripts\python.exe backend\tests\test_routing.py
+
 # 前端：结构化解析 / 降级路径 / XSS 转义 / 时间格式化
 cd app && npm run test:fe
 
 # 端到端验收（需后端已启动；会用 samples/ 里的音频真实跑一遍）
 .venv\Scripts\python.exe backend\tests\acceptance_e2e.py
+
+# 纪要全链路（HTTP 层，需以假 LLM 模式启动后端；两个终端）
+.venv\Scripts\python.exe backend\tests\serve_fake_llm.py          # 终端 1
+.venv\Scripts\python.exe backend\tests\test_summary_over_http.py  # 终端 2
 ```
 
-> 纪要相关的测试通过 `set_llm_client_factory()` 注入假客户端，
-> 因此**不需要 API key** 也能验证解析、清洗与降级逻辑。
+> `CCASR_LLM_FAKE=1` 会让后端使用**假 LLM 客户端**，仅用于在没有真实 API key 时
+> 验证纪要链路。默认关闭，生产部署不受影响。
+> 注意测试启动器**关闭了热重载** —— uvicorn 的 reload 会重新导入模块、
+> 把客户端工厂重置回真实 OpenAI，使注入失效。
 
 ## 常见问题
 

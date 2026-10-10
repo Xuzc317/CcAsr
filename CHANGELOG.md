@@ -2,6 +2,39 @@
 
 ## [未发布]
 
+### 验证 — 纪要全链路（HTTP 层）16/16 通过
+
+补齐此前未覆盖的接缝：**上传 → 串行队列 → 跨录音统一 → 合并 →
+自动触发纪要 → `/summary` 响应 → 结构化数据可被前端还原**。
+
+做法：新增 `backend/fake_llm.py`（**仅当 `CCASR_LLM_FAKE=1` 时启用**，
+默认关闭，生产环境为零影响的 no-op），在没有真实 API key 的情况下驱动全链路。
+假客户端**故意返回脏数据**，用于验证清洗逻辑真的生效：
+
+| 断言 | 结果 |
+|---|---|
+| 纪要自动完成（无需点按钮） | ✅ |
+| `/summary` 返回非空 Markdown | ✅ |
+| 结构化注释可被提取 | ✅ |
+| 非法类型 `flowchart` 被清洗 | ✅ |
+| 缺 items / 空 points 的块被丢弃 | ✅ |
+| 六类版式组件齐全（bullets/columns/timeline/steps/table/todo） | ✅ |
+| 待办字段归一化（missing → 未指定/未提及） | ✅ |
+| 导出纪要 Markdown | ✅ |
+
+**排查中发现并修复的问题**
+
+1. `meeting_summary.generate_meeting_summary()` 的配置校验在注入客户端**之前**执行，
+   导致测试注入被"LLM 未配置"挡住。现改为：若已注入客户端替身则跳过配置校验
+   （生产环境工厂恒为 `OpenAI` 本身，校验行为不变）。
+2. **uvicorn StatReload 会重新导入 `meeting_summary`**，把模块级客户端工厂
+   重置回真实 `OpenAI`，使启动时的注入失效。现除启动时注入外，
+   在每次生成纪要前也会幂等地重新确认一次；并新增
+   `backend/tests/serve_fake_llm.py`（关闭热重载的测试启动器）。
+
+> 新增文件：`backend/fake_llm.py`、`backend/tests/serve_fake_llm.py`、
+> `backend/tests/test_summary_over_http.py`
+
 ### 验证 — 真实双段会议（37 分钟）
 
 用用户提供的**同一场会议的两份连续录音**（`wx交接1-文档.wav` 19.3min +

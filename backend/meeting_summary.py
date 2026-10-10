@@ -360,11 +360,19 @@ def generate_meeting_summary(
     api_base = env("LLM_API_BASE", "")
     api_key = env("LLM_API_KEY", "")
     model = env("LLM_MODEL", "deepseek-chat")
-    if not api_base or not api_key or "REPLACE" in (api_key or "").upper():
-        raise ValueError(
-            "LLM 未配置：请在 .env 中填写 CCASR_LLM_API_KEY"
-            "（以及 CCASR_LLM_API_BASE / CCASR_LLM_MODEL）"
-        )
+
+    # 若已注入客户端替身（测试用），配置缺失不应阻断 —— 替身并不真的联网。
+    # 生产环境 _llm_client_factory 恒为 OpenAI 本身，因此仍会正常校验。
+    client_injected = _llm_client_factory is not OpenAI
+    if not client_injected:
+        if not api_base or not api_key or "REPLACE" in (api_key or "").upper():
+            raise ValueError(
+                "LLM 未配置：请在 .env 中填写 CCASR_LLM_API_KEY"
+                "（以及 CCASR_LLM_API_BASE / CCASR_LLM_MODEL）"
+            )
+    else:
+        logger.warning("检测到注入的 LLM 客户端替身，跳过配置校验（仅测试用）")
+        api_base = api_base or "https://injected.local/v1"
 
     client = _llm_client_factory(api_key=api_key, base_url=api_base)
     user_prompt = _build_user_prompt(
