@@ -144,42 +144,8 @@ class Project:
 
 
 @dataclass
-class SummarizeJob:
-    """AI 总结任务"""
-    job_id: str
-    task_id: str                          # 关联的转录任务 ID
-    preset: str                           # 预设 key: "podcast_polish" | "meeting_summary"
-    state: TaskState = TaskState.pending
-    progress: float = 0.0
-    has_reference: bool = False           # 是否上传了参考材料
-    include_intro: bool = True            # 参考材料是否作为节目介绍（仅播客预设）
-    error: Optional[str] = None
-    created_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    # 结果存储在磁盘 output/{task_id}_summary.md，不存内存
-
-    def to_dict(self) -> dict:
-        d = {
-            "job_id": self.job_id,
-            "task_id": self.task_id,
-            "preset": self.preset,
-            "state": self.state.value,
-            "progress": self.progress,
-            "has_reference": self.has_reference,
-            "has_result": self.state == TaskState.completed,
-        }
-        if self.error:
-            d["error"] = self.error
-        if self.created_at:
-            d["created_at"] = self.created_at
-        if self.completed_at:
-            d["completed_at"] = self.completed_at
-        return d
-
-
-@dataclass
 class TaskStatus:
-    """API 任务状态模型"""
+    """API 任务状态模型（已被 Project/Recording 取代，保留以兼容旧数据读取）"""
     task_id: str
     state: TaskState
     filename: str

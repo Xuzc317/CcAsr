@@ -393,14 +393,30 @@ class ProjectStore:
                     project_id, len(set(mapping.values())), unified_count)
         return True
 
-    def build_transcript(self, project_id: str) -> dict:
+    def build_transcript(self, project_id: str, rebuild: bool = False) -> dict:
         """
         合并项目内所有录音为一份会议转录文档。
 
         时间轴策略：按 order 顺序首尾相接，每段之间保留真实间隔，
         同时记录该段在整个会议中的**全局起始偏移**（offset），
         便于前端定位与「第 N 段录音」标注。
+
+        **优先复用已保存的 transcript.json**：用户会在合并文档里校对文本、
+        改说话人（PATCH /transcript 写入该文件）。若这里总是从各录音原始结果
+        重新拼装，那些编辑就会在导出、生成纪要时被静默丢弃。
+        传 ``rebuild=True`` 可强制重新拼装（用于录音变化后刷新）。
         """
+        if not rebuild:
+            saved = self._project_dir(project_id) / "transcript.json"
+            if saved.exists():
+                try:
+                    data = json.loads(saved.read_text(encoding="utf-8"))
+                    if data.get("segments"):
+                        return data
+                except Exception as e:
+                    logger.warning("[project %s] transcript.json 读取失败，改为重新拼装: %s",
+                                   project_id, e)
+
         proj = self._require(project_id)
         merged_segments: list[dict] = []
         recordings_meta: list[dict] = []

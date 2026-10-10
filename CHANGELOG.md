@@ -2,6 +2,28 @@
 
 ## [未发布]
 
+### 修复 — 合并文档的编辑在导出/纪要中被丢弃（用户可见）
+
+用户在前端校对文本、给说话人改名后，`PATCH /transcript` 会写入
+`projects/{id}/transcript.json`，`GET /transcript` 也能读回。
+但 `build_transcript()` **总是从各录音原始结果重新拼装**，导致：
+
+- 导出 TXT / JSON 用的是**未编辑的原始文本**
+- 生成会议纪要也基于未编辑文本
+
+即用户的校对成果被**静默丢弃**。现改为优先复用已保存的
+`transcript.json`，并保留 `rebuild=True` 用于强制重新拼装。
+
+新增 `backend/tests/test_transcript_editing.py`（19 项断言）覆盖：
+改文本、改说话人、保存 `speaker_map`、未知 id 不破坏数据、空请求幂等、
+导出反映编辑、不存在项目返回 404。已纳入 `run_all.py`（现 5 个套件）。
+
+### 清理
+
+- 删除死代码 `SummarizeJob`（旧预设式总结的遗留，重构后无任何引用）
+- `run_server.py` 注释由「AI 总结功能需要」更正为「会议纪要的 LLM 配置、ASR 路由等」
+- `TaskStatus` 补充说明：已被 Project/Recording 取代，保留以兼容旧数据读取
+
 ### 修复 — 前端工程文件缺失（严重）
 
 `.gitignore` 第 4 行的 `*.json` **把 `app/package.json` 也忽略了**，

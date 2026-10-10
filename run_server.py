@@ -3,7 +3,7 @@
 import os
 import sys
 
-# ── 加载 .env (AI 总结功能需要) ──
+# ── 加载 .env（会议纪要的 LLM 配置、ASR 路由等）──
 from dotenv import load_dotenv
 load_dotenv()
 
