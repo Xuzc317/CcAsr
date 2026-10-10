@@ -90,6 +90,7 @@ async def root():
 @app.get("/health")
 async def health():
     import torch
+    from backend.backends import describe_routing
     pipeline = get_backend()
     rss_mb = 0
     try:
@@ -121,6 +122,7 @@ async def health():
             "diarization": "nonnegative+eigengap" if has_eigengap
                            else "legacy(affinity=cosine)",
         },
+        "asr_routing": describe_routing(),
         "memory": {"rss_mb": round(rss_mb), "mps_allocated_mb": round(mps_alloc)},
     }
 
@@ -170,7 +172,7 @@ def _run_project_queue(project_id: str) -> None:
         try:
             logger.info("[project %s] 转写第 %d 段: %s",
                         project_id, rec.order + 1, rec.filename)
-            pipeline = get_backend()
+            pipeline = get_backend(language=rec.language)
             result = pipeline.transcribe(
                 audio_path=str(audio_path),
                 language=rec.language,

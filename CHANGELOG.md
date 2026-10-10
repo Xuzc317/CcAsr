@@ -2,6 +2,41 @@
 
 ## [未发布]
 
+### 新增 — 多语种 ASR 路由（需求 5）
+
+- 新增 `backend/whisper_backend.py`：faster-whisper（CTranslate2）本地多语种后端
+- 新增按语言自动路由（`backend/backends.py`）：
+  - `zh/yue/en/ja/ko` → 本地 SenseVoice（**带说话人分离**，中文质量更好）
+  - 其它语种 → faster-whisper（多语种兜底，**不做说话人分离**）
+  - `CCASR_ASR_ROUTING` 可强制指定 `sensevoice|whisper|doubao`；
+    兼容旧的 `CCASR_BACKEND`（优先级更低）
+- `/health` 新增 `asr_routing` 字段，便于确认当前路由与模型档位
+
+**实测（Windows / Py3.13 / CPU-only）**
+- `faster-whisper 1.2.1` + `ctranslate2 4.8.2` + `av 18.1.0` + `onnxruntime 1.31.0`
+  在 Python 3.13 上有 cp313 wheel，免编译安装成功
+- `tiny` 模型 30.3s 音频：耗时 1.6s，**RTF 0.053**，词级时间戳可用，语言识别 zh(0.998)
+- Whisper 语言表含 `yue`（粤语）但**不含 `nan`（台语/闽南语）**，与调研结论一致
+
+**两个必须记录的取舍（避免以后踩坑）**
+1. **`av` 必须钉 `<19`**。faster-whisper 依赖只写 `av>=11` 无上界，而 av>=19 删除了
+   `metadata_errors` 参数、faster-whisper 仍在调用 → 装最新版转写时抛 `TypeError`。
+   已在 `pyproject.toml` 的 `[project.optional-dependencies].whisper` 中钉死，
+   并在 `whisper_backend.py` 中对这个 TypeError 给出可操作提示。
+2. **中文不要降档**。实测 `tiny` 把"语音识别"听成"**與因時別**"，
+   故中文默认仍走 SenseVoice；faster-whisper 中文需 large 级才有竞争力。
+
+### 测试（新增）
+
+- `backend/tests/test_routing.py` — 路由判定 29 项断言（含语种覆盖、强制指定、
+  环境变量优先级、大小写容错、非法值回退）
+- `backend/tests/smoke_faster_whisper.py` — 真实加载模型并转写，兼查 av 版本坑
+
+### 文档
+
+- `.env.example` 重写：默认值改为 DeepSeek，并特别标注
+  **DeepSeek 没有 `deepseek-flash` 这个模型名**（应填 `deepseek-chat`）
+
 ### 测试
 
 - `backend/tests/test_meeting_summary.py` — 会议纪要管道验证（注入假 LLM 客户端，

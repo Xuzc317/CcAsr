@@ -1,7 +1,7 @@
 [project]
 name = "ccasr"
 version = "0.1.0"
-description = "CcAsr - 离线语音转文字 + 声纹识别服务"
+description = "CcAsr - 会议录音转写 + 说话人分离 + 自动会议纪要"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -13,9 +13,22 @@ dependencies = [
     "torchaudio>=2.0.0",
     "soundfile>=0.13.1",
     "scikit-learn>=1.8.0",
+    "scipy>=1.11.0",
+    "numpy>=1.26.0",
     "openai>=1.0.0",
     "python-dotenv>=1.0.0",
-    "click>=8.0.0",
+]
+
+[project.optional-dependencies]
+# 多语种兜底识别（SenseVoice 覆盖不到的语种）
+# 用法： pip install -e ".[whisper]"
+#
+# ⚠️ av 必须钉 <19：faster-whisper 的依赖只写 `av>=11` 没有上界，
+#    而 av>=19 删除了 `metadata_errors` 参数，faster-whisper 仍在调用它，
+#    装上最新版会在转写时抛 TypeError。实测 av==18.1.0 可正常工作。
+whisper = [
+    "faster-whisper>=1.0",
+    "av>=11,<19",
 ]
 
 [tool.uv]

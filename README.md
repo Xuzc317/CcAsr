@@ -222,6 +222,43 @@ CcAsr/
 └── pyproject.toml        # Python 依赖
 ```
 
+## 多语种支持
+
+默认按语言自动路由，无需配置：
+
+| 语种 | 后端 | 说话人分离 |
+|------|------|-----------|
+| 中 / 粤 / 英 / 日 / 韩 | 本地 SenseVoice | ✅ 有 |
+| 其它语种（法/德/西/俄/泰/越…） | 本地 faster-whisper | ❌ 无 |
+
+用 `CCASR_ASR_ROUTING` 可强制指定：`auto`（默认）/ `sensevoice` / `whisper` / `doubao`。
+
+**为什么要这样分工**（均经实测）：
+
+- **中文不走 faster-whisper**：实测 `tiny` 档把"语音识别"听成"**與因時別**"，
+  中文需要 large 级才有竞争力，而 large 在 CPU 上很慢。SenseVoice 中文又快又准。
+- **faster-whisper 不做说话人分离**：它本身不含 diarization，需要额外的
+  pyannote（gated 模型，商用条款未确认）。走该路径时说话人会统一为 `SPEAKER_0`，
+  日志与 `model_info.speaker` 都会标注。
+- **台语/闽南语暂不支持**：Whisper 的 100 种语言表里有 `yue`（粤语）但**没有 `nan`**，
+  SenseVoice 也只发布 zh/yue/en/ja/ko。要支持只能挂社区微调模型。
+
+### 安装多语种依赖（可选）
+
+```bash
+# Windows
+.venv\Scripts\python.exe -m pip install -e ".[whisper]" --index-url https://pypi.org/simple
+# macOS / Linux
+.venv/bin/pip install -e ".[whisper]"
+```
+
+> ⚠️ **`av` 必须 <19**。faster-whisper 的依赖只写 `av>=11` 没有上界，
+> 而 av>=19 删除了 `metadata_errors` 参数、faster-whisper 仍在调用它，
+> 装上最新版会在转写时抛 `TypeError`。`pyproject.toml` 已钉死该约束。
+>
+> ⚠️ 若你的 pip 配置了指向不可达的镜像（如 TUNA），会报
+> "No matching distribution found"。此时加 `--index-url https://pypi.org/simple`。
+
 ## 测试
 
 ```bash
