@@ -98,6 +98,15 @@ async def root():
     }
 
 
+def _llm_health() -> dict:
+    """LLM 配置体检（不联网），把"配错了要等生成纪要才报错"变成一眼可见。"""
+    try:
+        from backend.meeting_summary import check_llm_config
+        return check_llm_config()
+    except Exception as e:  # 体检本身不应让 /health 失败
+        return {"ok": False, "problems": [f"体检失败: {e}"], "warnings": []}
+
+
 @app.get("/health")
 async def health():
     import torch
@@ -134,6 +143,7 @@ async def health():
                            else "legacy(affinity=cosine)",
         },
         "asr_routing": describe_routing(),
+        "llm": _llm_health(),
         "llm_fake": LLM_FAKE,
         "memory": {"rss_mb": round(rss_mb), "mps_allocated_mb": round(mps_alloc)},
     }

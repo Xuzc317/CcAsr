@@ -2,6 +2,33 @@
 
 ## [未发布]
 
+### 新增 — LLM 配置体检（`/health` 暴露）
+
+把「配置写错但不报错、直到生成纪要才失败」变成一眼可见。`GET /health`
+新增 `llm` 字段（**不发网络请求**）：
+
+```json
+"llm": {
+  "ok": false,
+  "problems": ["CCASR_LLM_API_KEY 仍是占位符，需填真实 key"],
+  "warnings": ["模型名 'deepseek-flash' 不在 api.deepseek.com 的常见列表
+                 ['deepseek-chat','deepseek-reasoner'] 中，若调用报「模型不存在」请改这里"],
+  "api_base": "https://api.deepseek.com",
+  "model": "deepseek-flash",
+  "key_set": false,
+  "fake": false
+}
+```
+
+可检出：未填 key / 仍是占位符 / base 缺失或不像 URL / 模型名笔误。
+对自建或代理端点（如 Ollama）不误报模型名。测试见
+`backend/tests/test_llm_config_check.py`（11 项断言）。
+
+### 修复
+
+- **`requests` 未声明依赖**：`doubao_backend.py` 与测试脚本都 import 了它，
+  但 `pyproject.toml` 未列出（仅因环境里恰好装了才没暴露）。已补上。
+
 ### 验证 — 纪要全链路（HTTP 层）16/16 通过
 
 补齐此前未覆盖的接缝：**上传 → 串行队列 → 跨录音统一 → 合并 →

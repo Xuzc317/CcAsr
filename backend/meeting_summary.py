@@ -326,6 +326,60 @@ def _to_markdown(data: dict) -> str:
     return "\n".join(lines)
 
 
+def check_llm_config() -> dict:
+    """
+    体检 LLM 配置（**不发网络请求**），供 /health 与启动自检使用。
+
+    目的是把"配错了但不报错、直到生成纪要才失败"变成一眼可见。
+    典型可检出问题：
+      - 未填 key / 仍是占位符
+      - 明显不存在的模型名（如 DeepSeek 没有 `deepseek-flash`）
+
+    Returns:
+        {"ok": bool, "problems": [...], "warnings": [...], "model": str}
+    """
+    api_base = (env("LLM_API_BASE", "") or "").strip()
+    api_key = (env("LLM_API_KEY", "") or "").strip()
+    model = (env("LLM_MODEL", "") or "").strip()
+
+    problems: list[str] = []
+    warnings: list[str] = []
+
+    if not api_key:
+        problems.append("CCASR_LLM_API_KEY 未设置")
+    elif "REPLACE" in api_key.upper() or api_key.lower() in ("your_api_key_here", "sk-xxx"):
+        problems.append("CCASR_LLM_API_KEY 仍是占位符，需填真实 key")
+
+    if not api_base:
+        problems.append("CCASR_LLM_API_BASE 未设置")
+    elif not api_base.startswith(("http://", "https://")):
+        warnings.append("CCASR_LLM_API_BASE 看起来不像 URL（应含 http(s)://）")
+
+    if not model:
+        warnings.append("CCASR_LLM_MODEL 未设置，将回退 deepseek-chat")
+
+    # 常见模型名笔误：本地校验，避免白等一次 API 调用
+    _KNOWN = {
+        "api.deepseek.com": ["deepseek-chat", "deepseek-reasoner"],
+        "api.openai.com": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+    }
+    for host, known in _KNOWN.items():
+        if host in api_base and model and model not in known:
+            warnings.append(
+                f"模型名 {model!r} 不在 {host} 的常见列表 {known} 中，"
+                "若调用报「模型不存在」请改这里"
+            )
+
+    return {
+        "ok": not problems,
+        "problems": problems,
+        "warnings": warnings,
+        "api_base": api_base,
+        "model": model or "(未设置，回退 deepseek-chat)",
+        "key_set": bool(api_key) and "REPLACE" not in api_key.upper(),
+        "fake": _llm_client_factory is not OpenAI,
+    }
+
 def generate_meeting_summary(
     project,
     transcript: dict,

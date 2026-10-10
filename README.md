@@ -299,14 +299,26 @@ cd app && npm run test:fe
 若仍出现，检查各段录音是否有足够长的语音（< 1 秒的片段不参与全局聚类）。
 
 **Q: 会议纪要没生成？**
-纪要需要 LLM。检查 `.env` 里 `CCASR_LLM_API_KEY` 是否已填写真实 key
-（占位符 `REPLACE_WITH_YOUR_DEEPSEEK_KEY` 会导致失败）。
-`GET /api/projects/{id}/summary` 的 `error` 字段会说明具体原因。
+先看 `GET /health` 的 `llm` 字段 —— 它会直接告诉你哪里配错了（不发网络请求）：
+
+```json
+"llm": {
+  "ok": false,
+  "problems": ["CCASR_LLM_API_KEY 仍是占位符，需填真实 key"],
+  "warnings": ["模型名 'deepseek-flash' 不在 api.deepseek.com 的常见列表中…"]
+}
+```
+
+常见原因：
+- `CCASR_LLM_API_KEY` 未填或仍是占位符
+- 模型名笔误（例如 DeepSeek 并没有 `deepseek-flash`，应为 `deepseek-chat`）
+
 转录本身不需要 LLM，不受影响。
 
 **Q: 纪要生成失败会影响转录结果吗？**
 不会。转录是独立阶段，纪要在其后执行且失败被捕获，
 项目状态会标记 `summary_state=failed`，转录与合并文档照常可用。
+已生成转录的会议可在纪要 Tab 点「重新生成」，**不需要重跑转录**。
 
 **Q: GPU 没被用上？**
 `/health` 的 `device` 字段会显示实际设备。无 NVIDIA GPU 时自动回退 CPU（多核并行），
