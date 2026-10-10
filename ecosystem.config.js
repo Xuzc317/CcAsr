@@ -33,7 +33,7 @@ module.exports = {
     {
       name: 'ccasr-frontend',
       cwd: path.join(ROOT, 'app'),
-      script: isWin ? 'npm' : 'pnpm',
+      script: 'npm',                    // 统一用 npm（仓库锁文件为 package-lock.json）
       args: 'run dev',                  // 生产环境建议改为 build + 由后端托管 dist
       interpreter: 'none',              // 避免 PM2 误用 node 解释器
       exec_mode: 'fork',

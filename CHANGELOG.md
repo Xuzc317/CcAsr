@@ -2,6 +2,43 @@
 
 ## [未发布]
 
+### 修复 — 前端工程文件缺失（严重）
+
+`.gitignore` 第 4 行的 `*.json` **把 `app/package.json` 也忽略了**，
+导致仓库里一直**没有前端的 `package.json`**。后果：
+克隆本仓库后无法构建前端（`npm install` 会误用默认的 `package.json`，
+生成的 `package-lock.json` 对应的是错误的依赖集）。
+
+缺失的 5 个文件（本次补齐）：
+
+| 文件 | 作用 |
+|------|------|
+| `app/package.json` | 前端依赖与脚本定义（**最关键**） |
+| `app/tsconfig.json` / `tsconfig.app.json` / `tsconfig.node.json` | TypeScript 配置，缺了 `tsc -b` 无法运行 |
+| `app/package-lock.json` | 依赖锁定 |
+
+同时删除已过期的 `app/pnpm-lock.yaml` —— 它仍引用重构时已移除的
+`wavesurfer.js` / `zustand` / `localforage` / `immer`，与当前 `package.json`
+不一致，保留会误导使用者。
+
+`.gitignore` 现显式放行前端工程配置（`package.json`、各 `tsconfig*.json`、
+lock 文件），并加注释说明为何需要例外。
+
+### 测试 — 全链路验证改为自包含
+
+此前 `test_summary_over_http.py` 需要**人工**以假 LLM 模式启动一个关闭热重载的
+后端进程才能跑，不利于回归。新增
+`backend/tests/test_summary_e2e_selfcontained.py`：
+用 FastAPI `TestClient` 在同进程内跑完整链路，**无需启动服务、无需 API key**。
+
+只替换两处外部依赖（假 ASR、假 LLM），其余全为生产代码：
+多文件上传 → 串行队列（真实调度）→ 跨录音说话人统一（真实聚类）→
+合并时间轴（真实拼接）→ 自动触发纪要 → `/summary` 响应 → 导出 → 删除。
+**26 项断言全部通过**，含"两段录音共用同一套说话人编号"这一核心验收点。
+
+新增 `backend/tests/run_all.py` 一键跑完 4 个后端套件（4/4 通过），
+并在 `app/package.json` 加 `test:be` 脚本。
+
 ### 新增 — LLM 配置体检（`/health` 暴露）
 
 把「配置写错但不报错、直到生成纪要才失败」变成一眼可见。`GET /health`

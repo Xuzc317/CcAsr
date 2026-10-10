@@ -1,43 +1,44 @@
-# CcAsr 安装说明
+﻿# CcAsr 瀹夎璇存槑
 
-## 环境要求
+## 鐜瑕佹眰
 
-| 依赖 | 版本要求 | 用途 |
+| 渚濊禆 | 鐗堟湰瑕佹眰 | 鐢ㄩ€?|
 |------|----------|------|
-| Python | 3.12+ | 后端运行时 |
-| Node.js | 20+ (LTS) | 前端构建 |
-| pnpm | 9+ | 前端包管理 |
-| uv | 最新版 | Python 依赖管理 |
-| ffmpeg | 最新版 | 音频格式转码 |
+| Python | 3.12+ | 鍚庣杩愯鏃?|
+| Node.js | 20+ (LTS) | 鍓嶇鏋勫缓锛堣嚜甯?npm锛?|
+| uv | 鏈€鏂扮増 | Python 渚濊禆绠＄悊 |
+| ffmpeg | 鏈€鏂扮増 | 闊抽鏍煎紡杞爜 |
 
-**GPU 加速（可选）：**
+> 鍓嶇鍖呯鐞嗗櫒鐢?**npm**锛圢ode.js 鑷甫锛屾棤闇€棰濆瀹夎锛夈€?
+> 浠撳簱鍐呴攣瀹氭枃浠朵负 `app/package-lock.json`銆?
 
-| 平台 | GPU | 说明 |
+**GPU 鍔犻€燂紙鍙€夛級锛?*
+
+| 骞冲彴 | GPU | 璇存槑 |
 |------|-----|------|
-| macOS (Apple Silicon) | MPS | 自动检测，无需额外配置 |
-| Windows/Linux (NVIDIA) | CUDA | 需安装 CUDA 版 PyTorch（见下方） |
+| macOS (Apple Silicon) | MPS | 鑷姩妫€娴嬶紝鏃犻渶棰濆閰嶇疆 |
+| Windows/Linux (NVIDIA) | CUDA | 闇€瀹夎 CUDA 鐗?PyTorch锛堣涓嬫柟锛?|
 
-## 1. 安装基础工具
+## 1. 瀹夎鍩虹宸ュ叿
 
 ### Windows
 
 ```powershell
-# ffmpeg（任选其一）
+# ffmpeg锛堜换閫夊叾涓€锛?
 winget install Gyan.FFmpeg
-# 或 scoop install ffmpeg / choco install ffmpeg
+# 鎴?scoop install ffmpeg / choco install ffmpeg
 
-# uv（Python 依赖管理）
+# uv锛圥ython 渚濊禆绠＄悊锛?
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-# Node.js + pnpm
+# Node.js锛堣嚜甯?npm锛屾棤闇€棰濆瀹夎锛?
 winget install OpenJS.NodeJS.LTS
-npm install -g pnpm
 ```
 
-### macOS（Homebrew）
+### macOS锛圚omebrew锛?
 
 ```bash
-# Homebrew（如未安装）
+# Homebrew锛堝鏈畨瑁咃級
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # ffmpeg
@@ -45,49 +46,31 @@ brew install ffmpeg
 
 # uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
-source ~/.zshrc   # 重新加载 shell
+source ~/.zshrc   # 閲嶆柊鍔犺浇 shell
 
-# nvm + Node.js
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-source ~/.zshrc
-nvm install --lts
-nvm use --lts
-
-# pnpm
-npm install -g pnpm
-```
-
-### nvm + Node.js
-
-```bash
+# nvm + Node.js锛坣pm 闅忎箣瀹夎锛?
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 source ~/.zshrc
 nvm install --lts
 nvm use --lts
 ```
 
-### pnpm
-
-```bash
-npm install -g pnpm
-```
-
-## 2. 获取代码
+## 2. 鑾峰彇浠ｇ爜
 
 ```bash
 git clone git@github.com:Xuzc317/ASR.git CcAsr
 cd CcAsr
 ```
 
-## 3. 后端安装
+## 3. 鍚庣瀹夎
 
 ```bash
 uv sync
 ```
 
-uv 会自动创建 `.venv` 并安装 Python 3.12 + 所有依赖。
+uv 浼氳嚜鍔ㄥ垱寤?`.venv` 骞跺畨瑁?Python 3.12 + 鎵€鏈変緷璧栥€?
 
-验证 GPU：
+楠岃瘉 GPU锛?
 
 ```bash
 # Windows
@@ -96,58 +79,60 @@ uv 会自动创建 `.venv` 并安装 Python 3.12 + 所有依赖。
 .venv/bin/python -c "import torch; print('CUDA:', torch.cuda.is_available(), 'MPS:', hasattr(torch.backends,'mps') and torch.backends.mps.is_available())"
 ```
 
-### Windows + NVIDIA GPU（CUDA 加速）
+### Windows + NVIDIA GPU锛圕UDA 鍔犻€燂級
 
-默认安装的是 CPU 版 PyTorch。如需 CUDA 加速：
+榛樿瀹夎鐨勬槸 CPU 鐗?PyTorch銆傚闇€ CUDA 鍔犻€燂細
 
 ```bash
 cd CcAsr
 .venv\Scripts\python.exe -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 ```
 
-> 需要先安装 [NVIDIA CUDA Toolkit 12.1](https://developer.nvidia.com/cuda-12-1-0-download-archive) 和对应 cuDNN。
+> 闇€瑕佸厛瀹夎 [NVIDIA CUDA Toolkit 12.1](https://developer.nvidia.com/cuda-12-1-0-download-archive) 鍜屽搴?cuDNN銆?
 
-### macOS（MPS 加速）
+### macOS锛圡PS 鍔犻€燂級
 
-macOS Apple Silicon 自动使用 MPS，无需额外配置。
+macOS Apple Silicon 鑷姩浣跨敤 MPS锛屾棤闇€棰濆閰嶇疆銆?
 
-## 4. 配置环境变量（AI 总结功能）
+## 4. 閰嶇疆鐜鍙橀噺锛圓I 鎬荤粨鍔熻兘锛?
 
-AI 总结功能需要配置 LLM API。复制模板并填写：
+AI 鎬荤粨鍔熻兘闇€瑕侀厤缃?LLM API銆傚鍒舵ā鏉垮苟濉啓锛?
 
 ```bash
 cd CcAsr
 cp .env.example .env     # Windows: copy .env.example .env
 ```
 
-编辑 `.env`：
+缂栬緫 `.env`锛?
 
 ```bash
-# LLM API 配置（OpenAI 兼容接口）
-CCASR_LLM_API_BASE=https://api.openai.com/v1    # API 地址
-CCASR_LLM_API_KEY=sk-xxx                          # 你的 API Key
-CCASR_LLM_MODEL=gpt-4o                            # 模型名称
-CCASR_LLM_MAX_CONTEXT=1000000                     # 最大上下文长度（可选，默认 1M）
+# LLM API 閰嶇疆锛圤penAI 鍏煎鎺ュ彛锛?
+CCASR_LLM_API_BASE=https://api.openai.com/v1    # API 鍦板潃
+CCASR_LLM_API_KEY=sk-xxx                          # 浣犵殑 API Key
+CCASR_LLM_MODEL=gpt-4o                            # 妯″瀷鍚嶇О
+CCASR_LLM_MAX_CONTEXT=1000000                     # 鏈€澶т笂涓嬫枃闀垮害锛堝彲閫夛紝榛樿 1M锛?
 ```
 
-- 支持任何 OpenAI 兼容 API（如 DeepSeek、Moonshot、本地 Ollama 等）
-- `.env` **仅在后端启动时加载**，修改后必须重启服务才生效
-- Prompt 模板（`backend/prompts/`）则支持热更新，修改 `.md` 文件无需重启
+- 鏀寔浠讳綍 OpenAI 鍏煎 API锛堝 DeepSeek銆丮oonshot銆佹湰鍦?Ollama 绛夛級
+- `.env` **浠呭湪鍚庣鍚姩鏃跺姞杞?*锛屼慨鏀瑰悗蹇呴』閲嶅惎鏈嶅姟鎵嶇敓鏁?
+- 濉ソ鍚庡彲璺戣繛閫氭€ц嚜妫€锛歚.venv\Scripts\python.exe backend\tests\check_llm_live.py`
+- 涔熷彲闅忔椂鏌ョ湅 `GET /health` 鐨?`llm` 瀛楁锛屽畠浼氭寚鍑洪厤缃棶棰?
 
-> 如不需要 AI 总结功能，可跳过此步骤，不影响转写功能。
+> 濡備笉闇€瑕佷細璁邯瑕佸姛鑳斤紝鍙烦杩囨姝ラ锛屼笉褰卞搷杞綍銆?
+> 杞綍鏈韩**涓嶉渶瑕?* LLM銆?
 
-## 5. 前端安装
+## 5. 鍓嶇瀹夎
 
 ```bash
 cd app
-pnpm install
+npm install
 ```
 
-## 6. 启动服务
+## 6. 鍚姩鏈嶅姟
 
-Windows 可直接双击 `start_backend.bat` / `start_frontend.bat`，或按下文手动启动。
+Windows 鍙洿鎺ュ弻鍑?`start_backend.bat` / `start_frontend.bat`锛屾垨鎸変笅鏂囨墜鍔ㄥ惎鍔ㄣ€?
 
-**终端 1 — 后端（端口 8000）：**
+**缁堢 1 鈥?鍚庣锛堢鍙?8000锛夛細**
 
 ```bash
 cd CcAsr
@@ -157,7 +142,7 @@ cd CcAsr
 .venv/bin/python run_server.py
 ```
 
-**Debug 模式**（输出详细日志）：
+**Debug 妯″紡**锛堣緭鍑鸿缁嗘棩蹇楋級锛?
 
 ```bash
 # Windows
@@ -166,57 +151,57 @@ cd CcAsr
 .venv/bin/python run_server.py --debug
 ```
 
-**终端 2 — 前端（端口 5173）：**
+**缁堢 2 鈥?鍓嶇锛堢鍙?5173锛夛細**
 
 ```bash
 cd CcAsr/app
-pnpm run dev
+npm run dev
 ```
 
-打开浏览器访问 `http://localhost:5173`。
+鎵撳紑娴忚鍣ㄨ闂?`http://localhost:5173`銆?
 
-## 7. 构建生产版本
+## 7. 鏋勫缓鐢熶骇鐗堟湰
 
 ```bash
 cd CcAsr/app
-pnpm run build
+npm run build
 ```
 
-构建产物输出到 `app/dist/`，后端 FastAPI 会自动托管（访问 `http://localhost:8000`）。
+鏋勫缓浜х墿杈撳嚭鍒?`app/dist/`锛屽悗绔?FastAPI 浼氳嚜鍔ㄦ墭绠★紙璁块棶 `http://localhost:8000`锛夈€?
 
-## 内网访问
+## 鍐呯綉璁块棶
 
-Vite 已配置 `host: true`，前端自动监听 `0.0.0.0`。局域网内通过 `http://<本机IP>:5173` 访问。
+Vite 宸查厤缃?`host: true`锛屽墠绔嚜鍔ㄧ洃鍚?`0.0.0.0`銆傚眬鍩熺綉鍐呴€氳繃 `http://<鏈満IP>:5173` 璁块棶銆?
 
-## 文件管理
+## 鏂囦欢绠＄悊
 
-- 上传文件存储在 `~/CcAsr/output/files/`（Windows：`C:\Users\<你>\CcAsr\output\files\`），以 MD5 哈希命名（去重）
-- 元数据记录在 `output/files/metadata.json`
-- 文件永久保存，不会随任务清理而删除
-- 可用 `CCASR_OUTPUT_DIR` 自定义输出目录
+- 涓婁紶鏂囦欢瀛樺偍鍦?`~/CcAsr/output/files/`锛圵indows锛歚C:\Users\<浣?\CcAsr\output\files\`锛夛紝浠?MD5 鍝堝笇鍛藉悕锛堝幓閲嶏級
+- 鍏冩暟鎹褰曞湪 `output/files/metadata.json`
+- 鏂囦欢姘镐箙淇濆瓨锛屼笉浼氶殢浠诲姟娓呯悊鑰屽垹闄?
+- 鍙敤 `CCASR_OUTPUT_DIR` 鑷畾涔夎緭鍑虹洰褰?
 
-## 常见问题
+## 甯歌闂
 
-### Q: `uv sync` 报 Python 版本不满足？
+### Q: `uv sync` 鎶?Python 鐗堟湰涓嶆弧瓒筹紵
 
-uv 会自动下载 Python 3.12，无需手动安装。如遇问题可指定版本：
+uv 浼氳嚜鍔ㄤ笅杞?Python 3.12锛屾棤闇€鎵嬪姩瀹夎銆傚閬囬棶棰樺彲鎸囧畾鐗堟湰锛?
 
 ```bash
 uv python install 3.12
 uv sync
 ```
 
-### Q: GPU 没被用上 / 如何确认设备？
+### Q: GPU 娌¤鐢ㄤ笂 / 濡備綍纭璁惧锛?
 
-后端 `/health` 接口的 `device` 字段会显示实际使用的设备。
+鍚庣 `/health` 鎺ュ彛鐨?`device` 瀛楁浼氭樉绀哄疄闄呬娇鐢ㄧ殑璁惧銆?
 
-- 无独立显卡时自动回退 CPU，使用多核并行（不需要额外配置）
-- NVIDIA 显卡需装 CUDA 版 PyTorch（见第 3 节）
-- MPS 仅 macOS Apple Silicon 可用
+- 鏃犵嫭绔嬫樉鍗℃椂鑷姩鍥為€€ CPU锛屼娇鐢ㄥ鏍稿苟琛岋紙涓嶉渶瑕侀澶栭厤缃級
+- NVIDIA 鏄惧崱闇€瑁?CUDA 鐗?PyTorch锛堣绗?3 鑺傦級
+- MPS 浠?macOS Apple Silicon 鍙敤
 
-### Q: 首次加载模型很慢？
+### Q: 棣栨鍔犺浇妯″瀷寰堟參锛?
 
-首次运行需下载模型文件（~1GB），后续走本地缓存。可提前手动下载：
+棣栨杩愯闇€涓嬭浇妯″瀷鏂囦欢锛垀1GB锛夛紝鍚庣画璧版湰鍦扮紦瀛樸€傚彲鎻愬墠鎵嬪姩涓嬭浇锛?
 
 ```bash
 cd CcAsr
@@ -226,7 +211,7 @@ cd CcAsr
 .venv/bin/python -c "from funasr import AutoModel; AutoModel(model='iic/SenseVoiceSmall')"
 ```
 
-### Q: 端口被占用？
+### Q: 绔彛琚崰鐢紵
 
 ```bash
 # macOS / Linux
@@ -238,20 +223,20 @@ lsof -ti:8000 && kill $(lsof -ti:8000)
 Get-NetTCPConnection -LocalPort 8000 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 ```
 
-### Q: 后端重启后任务列表为空？
+### Q: 鍚庣閲嶅惎鍚庝换鍔″垪琛ㄤ负绌猴紵
 
-任务列表持久化在 `output/tasks.json`，重启后会自动加载；
-转写结果（`output/*.json`）和音频文件（`output/files/`）同样持久保存在磁盘上。
+浠诲姟鍒楄〃鎸佷箙鍖栧湪 `output/tasks.json`锛岄噸鍚悗浼氳嚜鍔ㄥ姞杞斤紱
+杞啓缁撴灉锛坄output/*.json`锛夊拰闊抽鏂囦欢锛坄output/files/`锛夊悓鏍锋寔涔呬繚瀛樺湪纾佺洏涓娿€?
 
-### Q: 修改 .env 后 AI 总结不生效？
+### Q: 淇敼 .env 鍚?AI 鎬荤粨涓嶇敓鏁堬紵
 
-`.env` 在后端启动时加载一次，修改后必须重启服务：
+`.env` 鍦ㄥ悗绔惎鍔ㄦ椂鍔犺浇涓€娆★紝淇敼鍚庡繀椤婚噸鍚湇鍔★細
 
 ```bash
-# 如果用 pm2
+# 濡傛灉鐢?pm2
 pm2 reload ccasr-backend
 
-# 如果手动启动：先 Ctrl+C 停止，再重新启动
+# 濡傛灉鎵嬪姩鍚姩锛氬厛 Ctrl+C 鍋滄锛屽啀閲嶆柊鍚姩
 ```
 
-> Prompt 模板（`backend/prompts/*.md`）支持热更新，修改后无需重启。
+> Prompt 妯℃澘锛坄backend/prompts/*.md`锛夋敮鎸佺儹鏇存柊锛屼慨鏀瑰悗鏃犻渶閲嶅惎銆?

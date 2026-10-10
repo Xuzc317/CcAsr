@@ -59,12 +59,15 @@ uv sync
 
 ## 前端（新终端）
 cd CcAsr/app
-pnpm install
-pnpm run dev
+npm install
+npm run dev
 
 # 推荐 pm2 方案管理，可逐个重启服务
 pm2 reload all
 ```
+
+> 前端包管理器用 **npm**（仓库内为 `app/package-lock.json`，
+> `start_frontend.bat` 也调用 npm）。
 
 Windows 用户也可直接双击 `start_backend.bat` / `start_frontend.bat`。
 
@@ -261,28 +264,47 @@ CcAsr/
 
 ## 测试
 
+一键跑完后端全部测试（**不需要 API key、不需要启动服务**）：
+
 ```bash
-# 后端：会议纪要管道（注入假 LLM，不消耗额度、不依赖网络）
-.venv\Scripts\python.exe backend\tests\test_meeting_summary.py
-
-# 后端：ASR 路由判定
-.venv\Scripts\python.exe backend\tests\test_routing.py
-
-# 前端：结构化解析 / 降级路径 / XSS 转义 / 时间格式化
-cd app && npm run test:fe
-
-# 端到端验收（需后端已启动；会用 samples/ 里的音频真实跑一遍）
-.venv\Scripts\python.exe backend\tests\acceptance_e2e.py
-
-# 纪要全链路（HTTP 层，需以假 LLM 模式启动后端；两个终端）
-.venv\Scripts\python.exe backend\tests\serve_fake_llm.py          # 终端 1
-.venv\Scripts\python.exe backend\tests\test_summary_over_http.py  # 终端 2
+# Windows
+.venv\Scripts\python.exe backend\tests\run_all.py
+# macOS / Linux
+.venv/bin/python backend/tests/run_all.py
 ```
 
-> `CCASR_LLM_FAKE=1` 会让后端使用**假 LLM 客户端**，仅用于在没有真实 API key 时
-> 验证纪要链路。默认关闭，生产部署不受影响。
-> 注意测试启动器**关闭了热重载** —— uvicorn 的 reload 会重新导入模块、
-> 把客户端工厂重置回真实 OpenAI，使注入失效。
+前端测试：
+
+```bash
+cd app && npm run test:fe
+```
+
+### 各套件说明
+
+| 套件 | 覆盖内容 | 依赖 |
+|------|----------|------|
+| `run_all.py` | 一键汇总以下全部 | — |
+| `test_meeting_summary.py` | 纪要管道：JSON 提取 / 代码围栏 / 夹带解释文字 / 两次失败降级 / 重试成功 | 注入假 LLM |
+| `test_llm_config_check.py` | LLM 配置体检：缺 key / 占位符 / 模型名笔误 / base 异常 | 纯函数 |
+| `test_routing.py` | ASR 路由：语种覆盖 / 强制指定 / 环境变量优先级 / 容错 | 纯函数 |
+| `test_summary_e2e_selfcontained.py` | **全链路**：多文件上传→串行队列→跨录音统一→合并→自动纪要→导出→删除 | 假 ASR + 假 LLM |
+| `app/tests/frontend_verify.mjs` | 结构化解析 / 降级路径 / XSS 转义 / 时间格式化 | vite 转译 |
+
+### 需要外部条件的测试
+
+```bash
+# 真实音频端到端（需后端已启动，会用 samples/ 的音频真跑一遍）
+.venv\Scripts\python.exe backend\tests\acceptance_e2e.py
+
+# 真实双段会议（需自备音频路径，见脚本内 SRC）
+.venv\Scripts\python.exe backend\tests\real_meeting_two_parts.py
+
+# LLM 真实连通性（填好 key 后跑，只发一次最小请求）
+.venv\Scripts\python.exe backend\tests\check_llm_live.py
+```
+
+> `CCASR_LLM_FAKE=1` 可让后端使用**假 LLM 客户端**，仅用于验证纪要链路。
+> 默认关闭，生产部署不受影响。
 
 ## 常见问题
 
