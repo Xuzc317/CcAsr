@@ -4,28 +4,27 @@
 
 **会议录音 → 说话人分离转录 → 可追溯的会议纪要**
 
-把一段长会议（或拆成好几段的录音）丢进来，得到一份**带说话人、带时间轴、结论能点回原声**的会议纪要。
+把一个长会议（或拆成好几段的录音）丢进来，得到一份**带说话人、带时间轴、结论能点回原声**的会议纪要。
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Vite](https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white)](https://vite.dev/)
 [![离线可用](https://img.shields.io/badge/转录-完全离线-success)](#多语种支持)
-[![测试](https://img.shields.io/badge/测试-151%20项断言-brightgreen)](#测试)
+[![测试](https://img.shields.io/badge/测试-205%20项-brightgreen)](#测试)
 
-[功能](#功能) · [截图](#界面) · [快速开始](#快速开始) · [使用流程](#使用流程) · [API](#api-接口) · [测试](#测试) · [FAQ](#常见问题)
+[功能](#功能) · [界面](#界面) · [快速开始](#快速开始) · [架构](#架构) · [API](#api-接口) · [测试](#测试) · [FAQ](#常见问题)
 
 </div>
 
 ---
 
-![会议纪要：结构化版式 + 证据链](docs/images/03b-evidence.png)
+![会议纪要：结构化版式 + 证据链](docs/images/ui-summary.png)
 
 ## 这是什么
 
-市面上的会议转录工具大多做三件事：转文字、分说话人、生成摘要。CcAsr 关注的是**长会议被拆成多段录音**这个真实场景，以及**纪要里的结论能不能回溯到原话**。
-
-两个核心差异：
+市面上的会议转录工具大多做三件事：转文字、分说话人、生成摘要。CcAsr 盯的是**长会议被拆成多段录音**这个真实场景，以及**纪要里的结论能不能回溯到原话**。
 
 **1. 多段录音 = 一份文档**
 一场 3 小时的会议常被录成 3 个文件。分别转录会得到 3 份各自从 `00:00` 开始、说话人编号还互相冲突的文稿。CcAsr 把它们**串行转录后合并成一份**：统一时间轴、统一说话人编号。
@@ -62,7 +61,7 @@
 | 能力 | 说明 |
 |---|---|
 | **自动生成** | 全部录音转录完成后自动触发，不需要点按钮 |
-| **结构化版式** | 6 类组件：分栏色块 / 三线表格 / 垂直时间轴 / 流程条 / 待办表格 / 要点（参考腾讯会议元宝版式，[调研见 docs](docs/yuanbao-meeting-summary-research.md)） |
+| **结构化版式** | 6 类组件：分栏色块 / 三线表格 / 垂直时间轴 / 流程条 / 待办表格 / 要点（[版式调研](docs/yuanbao-meeting-summary-research.md)） |
 | **证据链** | 每个章节附可点击的原声时间戳，点击跳转播放 |
 | **参考材料** | 上传议程、参会名单可提升人名与专有名词准确率 |
 | **优雅降级** | LLM 不按格式输出时自动回退 Markdown，失败不影响转录 |
@@ -73,55 +72,45 @@
 
 | 改什么 | 怎么改 |
 |---|---|
-| **说话人名** | 顶部「说话人显示名」：`SPEAKER_0` → `leader`，`SPEAKER_1` → `我`，全局生效 |
+| **说话人名** | 顶部说话人工具条：`SPEAKER_0` → `leader`，全局生效 |
 | **单句归属** | 点句首的说话人标签 → 选「这句其实是：」另一个人 |
 | **文字** | 双击正文校对 |
 
-改过的句子会**高亮**显示，底部实时汇总「待保存 N 处（文字 X 段 / 归属 Y 段 / 说话人名 Z 个）」，
-点「确认修改」才写回；点「撤销全部修改」回到上次保存的状态。导出 **TXT / JSON / Markdown**，
-导出与纪要都用改后的显示名。
+改过的句子会**高亮**，底部实时汇总「待保存 N 处（文字 / 归属 / 说话人名）」，
+点「确认修改」才写回；点「撤销全部修改」回到上次保存的状态。导出 **TXT / JSON / Markdown**，导出与纪要都用改后的显示名。
 
-![转录后修改](docs/images/08-edit-pending.png)
+![转录后修改](docs/images/ui-edit-rename.png)
 
-<sub>改完未保存的状态：说话人已改为 leader、文字已校对，底部显示「待保存 2 处」</sub>
+<sub>改完未保存的状态：说话人已改名、文字已校对，底部显示「待保存 3 处」</sub>
 
 ---
 
 ## 界面
 
-### 我的会议
+UI 2.0「纸面工作台」：暖白纸面 + 石墨墨色，品牌靛紫只出现在需要行动的地方（按钮 / 当前态 / 证据），
+错误红与品牌色彻底分离，说话人在所有页面**恒定同色**。设计规范见 [docs/design](docs/design/CcAsr-UI-Redesign.html)。
 
-一个会议 = 一个文档，可导入多段录音。
+| 我的会议 | 合并转录 |
+|---|---|
+| ![我的会议](docs/images/ui-meetings.png) | ![合并转录](docs/images/ui-transcript.png) |
+| 一个会议 = 一个文档，可导入多段录音 | 跨录音统一时间轴；说话人可改名，导出也用显示名 |
 
-![我的会议](docs/images/01-meeting-list.png)
+| 会议纪要 | 录音队列 |
+|---|---|
+| ![会议纪要](docs/images/ui-summary.png) | ![录音队列](docs/images/ui-recordings.png) |
+| 结构化版式；证据徽章上收至标题行，点击跳原声 | 每段状态一目了然，失败行内联原因与重试 |
 
-### 合并转录
+<details>
+<summary>更多界面细节</summary>
 
-跨录音的统一时间轴。分隔条标出每段录音，右侧标注全局起止时间；说话人可改名，改名后**导出也用显示名**。
+| 单句改判 | 批量改判 | 空队列引导 |
+|---|---|---|
+| ![单句改判](docs/images/ui-edit-reassign.png) | ![批量改判](docs/images/ui-batch-dialog.png) | ![空态](docs/images/ui-empty.png) |
 
-![合并转录](docs/images/04-transcript.png)
+</details>
 
-### 转录后修改
-
-三项修改各就各位：顶部改说话人名、点标签改单句归属、双击改文字。改动先留本地，底部确认栏汇总后一次性提交。
-
-![转录后修改](docs/images/07-edit-reassign.png)
-
-<sub>点某句的说话人标签即可展开「这句其实是：」下拉，把这一句改判给别人</sub>
-
-### 会议纪要
-
-结构化版式 + 证据链。每个章节下方是校验过的原声时间戳。
-
-![会议纪要](docs/images/03b-evidence.png)
-
-### 录音队列
-
-每段录音的处理状态一目了然；失败的段会显示错误原因，可重试。
-
-![录音队列](docs/images/05-recordings.png)
-
-> 截图由 `node app/scripts/capture-readme-shots.mjs` 自动生成（需后端运行）。
+> 配图由 `npm run shots`（在 `app/` 下）自动生成，需要后端已启动。
+> 脚本会先把**说话人显示名**换成示例名、截完还原——本地真实姓名不会随配图进入仓库。
 
 ---
 
@@ -131,15 +120,15 @@
 
 ```bash
 # 1) 依赖
-uv sync                      # 或 pip install -e .
+uv sync                                    # 或 pip install -e .
 
-# 2) 配置 LLM（纪要需要；转录不需要）
-cp .env.example .env
+# 2) 配置 LLM（只有纪要需要；转录不需要）
+cp .env.example .env                       # Windows: copy .env.example .env
 #    编辑 .env，至少填 CCASR_LLM_API_KEY 与 CCASR_LLM_MODEL
 
 # 3) 启动后端
-.venv\Scripts\python.exe run_server.py      # Windows
-.venv/bin/python run_server.py              # macOS / Linux
+.venv\Scripts\python.exe run_server.py     # Windows
+.venv/bin/python run_server.py             # macOS / Linux
 
 # 4) 启动前端（新终端）
 cd app && npm install && npm run dev
@@ -151,20 +140,13 @@ cd app && npm install && npm run dev
 <summary>生产部署 / 不想开前端 dev server</summary>
 
 ```bash
-cd app && npm run build     # 产出 app/dist
+cd app && npm run build       # 产出 app/dist
 ```
 
-构建后后端会直接托管静态文件，只需访问 <http://localhost:8000>。
-（已配置 SPA 回退，`/meetings`、`/meeting/{id}` 等深链接可直接访问或刷新。）
+构建后后端会直接托管静态文件，只需访问 <http://localhost:8000>；已配置 SPA 回退，深链接可直接刷新。
 
-用 pm2 托管：
-
-```bash
-pm2 start ecosystem.config.js
-pm2 reload all
-```
-
-Windows 用户也可直接双击 `start_backend.bat` / `start_frontend.bat`。
+用 pm2 托管：`pm2 start ecosystem.config.js && pm2 reload all`。
+Windows 也可直接双击 `start_backend.bat` / `start_frontend.bat`。
 
 </details>
 
@@ -177,7 +159,7 @@ Windows 用户也可直接双击 `start_backend.bat` / `start_frontend.bat`。
       ↓
 ② 导入录音        拖拽或一次选多个；按文件名顺序排队
       ↓
-③ 串行转录        队列逐段处理，「录音」Tab 看每段状态
+③ 串行转录        队列逐段处理，「录音」页看每段状态
       ↓
 ④ 自动合并        跨录音统一说话人 → 生成全局时间轴文档
       ↓
@@ -186,55 +168,46 @@ Windows 用户也可直接双击 `start_backend.bat` / `start_frontend.bat`。
 ⑥ 校对导出        双击改文本 / 说话人改名 / 导出 TXT·JSON·Markdown
 ```
 
-### 多段录音是怎么处理的
-
-一场长会议拆成多段录音，直接分段转写会踩两个坑，这里都做了处理：
-
-| 问题 | 处理方式 |
-|------|----------|
-| 同一人在不同录音里被编成不同 `SPEAKER_x` | 汇总所有录音的声纹向量**全局重聚类**，全会议共用一套编号 |
-| 时间戳各自从 0 开始，无法定位 | 合并为**统一时间轴**（`offset + local_start`），点击任一句自动切到对应录音的对应位置 |
-
+**多段录音的两个坑，这里都处理了**：同一人在不同录音里被编成不同 `SPEAKER_x`（→ 全局重聚类）；
+时间戳各自从 0 开始无法定位（→ 统一时间轴 `offset + local_start`）。
 > 全局重聚类会排除时长 < 1 秒的片段——过短片段的声纹不可靠，会把聚类带偏。
-
-**实测**（两段真实会议，共 35 分 28 秒）：
-
-```
-录音 #1  offset=0.00s      1091.73s   228 段
-录音 #2  offset=1092.73s   1035.84s   359 段
-─────────────────────────────────────────────
-合并     587 段 · 2 位说话人 · 时间轴单调递增
-两段标签集均为 {SPEAKER_0, SPEAKER_1}  ← 统一真的生效了
-```
 
 ---
 
-## 技术架构
+## 架构
+
+### 技术栈
+
+| 层 | 选型 |
+|---|---|
+| **前端** | React 19 · TypeScript 6 · Vite 8 · React Router 7 · react-virtuoso（虚拟滚动） |
+| **样式** | 原生 CSS + Design Tokens（无 UI 框架），单一浅色主题 |
+| **后端** | FastAPI · Python 3.11+ · 严格串行的项目队列 |
+| **ASR** | SenseVoice（中/粤/英/日/韩，带说话人分离） · faster-whisper（多语种兜底） |
+| **声纹** | CAM++ embedding + 谱聚类（eigengap 定簇数） |
+| **纪要** | 任意 OpenAI 兼容 LLM（DeepSeek / OpenAI / Moonshot…） |
+| **硬件** | CUDA / MPS 自动检测，无 GPU 回退 CPU 多核 |
+
+### 处理链路
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│ 前端   React 19 + TypeScript + Vite                           │
-│   我的会议 ──→ 会议详情                                        │
-│                多文件拖拽上传 · 队列进度                        │
-│                Tabs: 会议纪要 / 合并转录 / 录音                 │
-│                Virtuoso 虚拟滚动（587 段无卡顿）                │
-│                共享 <audio>：纪要证据跳转 ↔ 转录点击播放        │
-├───────────────────────────────────────────────────────────────┤
-│ 后端   FastAPI + Python                                       │
-│                                                               │
-│   项目队列（严格串行）                                          │
-│     录音1 → 录音2 → … → 录音N                                  │
-│       每段:  VAD(fsmn-vad)                                    │
-│              → ASR(SenseVoice) ∥ 声纹(CAM++)                  │
-│              → 谱聚类（非负亲和矩阵 + eigengap 定簇数）         │
-│                     ↓ 声纹向量落盘 .npy                        │
-│     全部完成后:  跨录音全局重聚类                               │
-│                → 合并统一时间轴                                 │
-│                → LLM 生成结构化纪要                             │
-│                → 校验证据时间戳（防编造）                       │
-├───────────────────────────────────────────────────────────────┤
-│ 硬件   CUDA / MPS 自动检测，无 GPU 回退 CPU 多核                │
-└───────────────────────────────────────────────────────────────┘
+录音1 → 录音2 → … → 录音N          项目队列，严格串行
+  每段:  VAD(fsmn-vad)
+         → ASR(SenseVoice) ∥ 声纹(CAM++)
+         → 谱聚类（非负亲和矩阵 + eigengap 定簇数）
+                ↓ 声纹向量落盘 .npy
+全部完成后:  跨录音全局重聚类 → 合并统一时间轴
+          → LLM 生成结构化纪要
+          → 校验证据时间戳（防编造）
+```
+
+### 目录
+
+```
+backend/     FastAPI 入口 · 项目队列 · 纪要生成 · ASR 路由 · 数据模型
+app/         React 前端（pages / components / styles / utils）+ 验收脚本
+docs/        design/（UI 规范与 Logo） · images/（README 配图） · 调研与 QA 报告
+samples/     测试音频（不入库）
 ```
 
 ---
@@ -248,13 +221,12 @@ Windows 用户也可直接双击 `start_backend.bat` / `start_frontend.bat`。
 | 中 / 粤 / 英 / 日 / 韩 | 本地 SenseVoice | ✅ 有 |
 | 其它语种（法/德/西/俄/泰/越…） | 本地 faster-whisper | ❌ 无 |
 
-用 `CCASR_ASR_ROUTING` 可强制指定：`auto`（默认）/ `sensevoice` / `whisper` / `doubao`。
+`CCASR_ASR_ROUTING` 可强制指定：`auto`（默认）/ `sensevoice` / `whisper` / `doubao`。
 
-**为什么这样分工**（均经实测）：
-
-- **中文不走 faster-whisper**：实测 `tiny` 档把「语音识别」听成「**與因時別**」，中文需要 large 级才有竞争力，而 large 在 CPU 上很慢。SenseVoice 中文又快又准。
-- **faster-whisper 不做说话人分离**：它本身不含 diarization，需要额外的 pyannote（gated 模型，商用条款未确认）。走该路径时说话人统一为 `SPEAKER_0`，日志与 `model_info.speaker` 都会标注。
-- **台语/闽南语暂不支持**：Whisper 的 100 种语言表里有 `yue`（粤语）但**没有 `nan`**，SenseVoice 也只发布 zh/yue/en/ja/ko。要支持只能挂社区微调模型。
+**为什么这样分工**（均经实测）：中文在 faster-whisper 的 `tiny` 档会把「语音识别」听成「與因時別」，
+中文要 large 级才有竞争力而 large 在 CPU 上很慢；faster-whisper 本身不含 diarization，
+需要额外的 pyannote（gated 模型，商用条款未确认）；Whisper 的 100 种语言表里有 `yue` 但没有 `nan`，
+台语/闽南语暂无模型可用。
 
 <details>
 <summary>安装多语种依赖（可选）</summary>
@@ -263,9 +235,9 @@ Windows 用户也可直接双击 `start_backend.bat` / `start_frontend.bat`。
 .venv\Scripts\python.exe -m pip install -e ".[whisper]" --index-url https://pypi.org/simple
 ```
 
-> ⚠️ **`av` 必须 < 19**。faster-whisper 的依赖只写 `av>=11` 没有上界，而 `av>=19` 删除了 `metadata_errors` 参数、faster-whisper 仍在调用它，装上最新版会在转写时抛 `TypeError`。`pyproject.toml` 已钉死该约束。
->
-> ⚠️ 若 pip 配置了不可达的镜像（如 TUNA），会报 `No matching distribution found`。此时加 `--index-url https://pypi.org/simple`。
+> ⚠️ **`av` 必须 < 19**：`av>=19` 删除了 `metadata_errors` 参数而 faster-whisper 仍在调用它，
+> 会抛 `TypeError`。`pyproject.toml` 已钉死该约束。
+> ⚠️ 若 pip 配了不可达的镜像（如 TUNA），加 `--index-url https://pypi.org/simple`。
 
 </details>
 
@@ -281,20 +253,16 @@ Windows 用户也可直接双击 `start_backend.bat` / `start_frontend.bat`。
 | `CCASR_LLM_API_KEY` | 是 | API Key（**只放 `.env`，不要提交**） |
 | `CCASR_LLM_MODEL` | 是 | 模型名，如 `deepseek-chat` |
 | `CCASR_LLM_MAX_CONTEXT` | 否 | 最大上下文 token |
-| `CCASR_BACKEND` | 否 | `sensevoice`（默认，本地离线）/ `doubao`（云端） |
 | `CCASR_ASR_ROUTING` | 否 | `auto`（默认）/ `sensevoice` / `whisper` / `doubao` |
+| `CCASR_BACKEND` | 否 | `sensevoice`（默认，本地离线）/ `doubao`（云端） |
 | `CCASR_OUTPUT_DIR` | 否 | 输出目录，默认 `~/CcAsr/output` |
 | `CCASR_DEBUG` | 否 | 设为 `1` 开启详细日志 |
 
-> 🔒 `.env` 已被 `.gitignore` 忽略，从未入库。仓库里没有任何硬编码密钥。
->
-> 旧版 `WINASR_*` 前缀仍兼容读取（会打印弃用警告），方便老用户迁移。
->
+> 🔒 `.env` 已被 `.gitignore` 忽略，从未入库；仓库里没有任何硬编码密钥。
+> 旧版 `WINASR_*` 前缀仍兼容读取（会打印弃用警告）。
 > ⚠️ **改完 `.env` 必须重启后端**——环境变量只在启动时加载一次。
 
-### 配置自检
-
-`GET /health` 会**不发网络请求**地告诉你配置哪里不对：
+`GET /health` 会**不发网络请求**地做配置体检：
 
 ```json
 "llm": {
@@ -314,19 +282,14 @@ Windows 用户也可直接双击 `start_backend.bat` / `start_frontend.bat`。
 |------|------|------|
 | `POST` | `/api/projects` | 创建会议（body: `{"name": "xx 会议"}`） |
 | `GET` | `/api/projects` | 列出会议 |
-| `GET` | `/api/projects/{id}` | 详情（含录音队列状态） |
-| `PATCH` | `/api/projects/{id}` | 重命名 |
-| `DELETE` | `/api/projects/{id}` | 删除会议及全部产物 |
+| `GET` `PATCH` `DELETE` | `/api/projects/{id}` | 详情 / 重命名 / 删除（含全部产物） |
 | `POST` | `/api/projects/{id}/recordings` | **一次上传多个录音**（multipart，字段 `files`） |
-| `POST` | `/api/projects/{id}/start` | 启动/继续队列；`retry_failed=true`（默认）会重试失败项 |
-| `GET` | `/api/projects/{id}/transcript` | 合并转录（统一时间轴） |
-| `PATCH` | `/api/projects/{id}/transcript` | 保存校对与说话人改名 |
-| `POST` | `/api/projects/{id}/transcript/reassign` | **批量改判**：把某人的全部发言改给另一人（`{"from","to"}`） |
-| `GET` | `/api/projects/{id}/summary` | 会议纪要（Markdown + 状态） |
-| `POST` | `/api/projects/{id}/summary/regenerate` | 重新生成纪要 |
+| `POST` | `/api/projects/{id}/start` | 启动/继续队列；`retry_failed=true`（默认）重试失败项 |
+| `GET` `PATCH` | `/api/projects/{id}/transcript` | 合并转录 / 保存校对与改名 |
+| `POST` | `/api/projects/{id}/transcript/reassign` | 批量改判（`{"from","to"}`） |
+| `GET` `POST` | `/api/projects/{id}/summary` | 纪要 / 重新生成 |
 | `POST` | `/api/projects/{id}/reference` | 上传参考材料 |
 | `GET` | `/api/projects/{id}/recordings/{rid}/audio` | 单段音频（支持 Range） |
-| `GET` | `/api/projects/{id}/recordings/{rid}/transcript` | 单段录音的本地时间轴 |
 | `GET` | `/api/projects/{id}/export?fmt=md\|txt\|json` | 导出 |
 | `GET` | `/health` | 健康检查 + 配置体检 |
 
@@ -334,27 +297,19 @@ Windows 用户也可直接双击 `start_backend.bat` / `start_frontend.bat`。
 <summary>示例：建会议并导入多段录音</summary>
 
 ```bash
-# 1) 建会议
 PID=$(curl -s -X POST http://localhost:8000/api/projects \
   -H 'Content-Type: application/json' \
   -d '{"name":"11月产品评审会"}' | python -c "import sys,json;print(json.load(sys.stdin)['project_id'])")
 
-# 2) 一次上传多个录音（按文件名顺序排队，自动开始串行转录）
 curl -X POST "http://localhost:8000/api/projects/$PID/recordings" \
-  -F "files=@part1.m4a" -F "files=@part2.m4a" -F "files=@part3.m4a" \
-  -F "language=zh"
+  -F "files=@part1.m4a" -F "files=@part2.m4a" -F "files=@part3.m4a" -F "language=zh"
 
-# 3) 查询进度（state: draft → transcribing → summarizing → completed）
-curl -s "http://localhost:8000/api/projects/$PID"
-
-# 4) 取纪要与合并转录
-curl -s "http://localhost:8000/api/projects/$PID/summary"
-curl -s "http://localhost:8000/api/projects/$PID/transcript"
+curl -s "http://localhost:8000/api/projects/$PID"            # state 轮询
+curl -s "http://localhost:8000/api/projects/$PID/summary"    # 纪要
 ```
 
-**分批上传**：`start=false` 先入队、不启动，攒齐后再 `POST /start`。此时项目状态保持 `draft`，不会被并发保护挡住。
-
-> ⚠️ 队列**运行中**再次上传返回 `409`，避免多段录音并发争抢 CPU/GPU。等当前队列跑完再传。
+`start=false` 可先入队不启动，攒齐后再 `POST /start`（项目保持 `draft`）。
+> ⚠️ 队列**运行中**再次上传返回 `409`，避免多段录音并发争抢 CPU/GPU。
 
 </details>
 
@@ -368,104 +323,43 @@ curl -s "http://localhost:8000/api/projects/$PID/transcript"
 | 35 min（两段合并） | ~168 s | ~0.08 |
 | 103 min | ~14 min | ~0.14 |
 
-> RTF < 1 表示快于实时。优化：ASR + 声纹并行、GPU 加速（CUDA/MPS 自动检测）、非 WAV 预转码。
->
-> 实测环境：Windows / CPU-only / 16 核。**仅代表缓存已热的 CPU 环境**，不同硬件差异较大。
-
-用下面这个脚本可对任意会议出量化报告：
-
-```bash
-.venv\Scripts\python.exe backend\tests\quality_metrics.py <会议ID>
-```
-
-输出段数、说话人分布、段长分布、时间轴单调性、**各录音标签集是否相同**、纪要版式分布、**证据覆盖率**、待办数、峰值内存，并明确列出**未度量项**（CER/WER、DER、定位误差——这些需要人工标注语料，不做自动声明）。
-
----
-
-## 项目结构
-
-```
-CcAsr/
-├── backend/
-│   ├── app.py             # FastAPI 入口（会议项目 API + SPA 托管）
-│   ├── project_store.py   # 项目/录音管理 + 串行队列 + 跨录音说话人统一
-│   ├── meeting_summary.py # 纪要生成（结构化组件 + 证据链校验 + MD 降级）
-│   ├── pipeline.py        # 核心 Pipeline（VAD → ASR + 声纹 → 聚类）
-│   ├── backends.py        # ASR 后端路由（SenseVoice / faster-whisper / 豆包）
-│   ├── whisper_backend.py # faster-whisper 后端
-│   ├── config.py          # 配置解析（CCASR_* + 旧 WINASR_* 兼容）
-│   ├── schema.py          # 数据模型（Project / Recording / Segment）
-│   ├── file_store.py      # 文件管理（MD5 去重 + 元数据）
-│   └── tests/             # 测试（见「测试」章节）
-├── app/                   # React 前端
-│   ├── src/components/
-│   │   ├── MeetingListPage.tsx     # 我的会议
-│   │   ├── MeetingDetailPage.tsx   # 会议详情 + 共享播放器
-│   │   ├── TranscriptWorkspace.tsx # 合并转录（跨录音回放 + 校对）
-│   │   └── SummaryView.tsx         # 纪要渲染（8 类组件 + 证据徽章）
-│   └── scripts/           # 测试启动器 + README 截图脚本
-├── docs/
-│   ├── images/            # README 配图（含演示 GIF）
-│   ├── yuanbao-meeting-summary-research.md   # 元宝纪要版式调研
-│   └── test-report-*.md   # QA 测试报告
-├── samples/               # 测试音频（不入库）
-├── output/                # 输出目录（默认 ~/CcAsr/output）
-│   ├── files/             #   上传音频（MD5 命名，去重）
-│   └── projects/{id}/     #   每场会议
-│       ├── recordings/    #     各段结果 JSON + 声纹 .npy
-│       ├── transcript.json#     合并转录（统一时间轴 + 说话人改名）
-│       └── summary.md     #     会议纪要（内嵌结构化组件）
-├── .env                   # 环境变量（不提交）
-├── run_server.py          # 启动脚本（--debug）
-├── CHANGELOG.md           # 更新日志
-├── TESTING.md             # 测试人员手册
-└── pyproject.toml
-```
+> RTF < 1 表示快于实时。实测环境：Windows / CPU-only / 16 核，**仅代表缓存已热的 CPU 环境**。
+> 出量化报告：`.venv\Scripts\python.exe backend\tests\quality_metrics.py <会议ID>`（含段数、说话人分布、
+> 时间轴单调性、各录音标签集是否一致、证据覆盖率、峰值内存，并明确列出**未度量项**）。
 
 ---
 
 ## 测试
 
-一键跑完后端全部测试（**不需要 API key、不需要启动服务**）：
-
 ```bash
-.venv\Scripts\python.exe backend\tests\run_all.py     # Windows
-.venv/bin/python backend/tests/run_all.py             # macOS / Linux
+.venv\Scripts\python.exe backend\tests\run_all.py     # 后端全部（无需 key、无需启服务）
+cd app && npm run test:fe && npm run lint             # 前端 + ESLint
+cd app && npm run test:be                             # 同上后端套件（跨平台入口）
 ```
 
-```bash
-cd app && npm run test:fe     # 前端
-cd app && npm run lint        # ESLint
-```
-
-当前状态：**后端 7 套件 / 151 项断言全通过 · 前端 24 项 · ESLint 0 错误**。
+当前状态：**后端 8 套件 / 205 项断言全通过 · 前端 24 项 · ESLint 0 错误**。
 
 | 套件 | 覆盖内容 | 依赖 |
 |------|----------|------|
-| `test_meeting_summary.py` | 纪要管道：JSON 提取 / 代码围栏 / 夹带解释 / 两次失败降级 / 重试 | 注入假 LLM |
-| `test_llm_config_check.py` | 配置体检：缺 key / 占位符 / 模型名笔误 / base 异常 | 纯函数 |
-| `test_routing.py` | ASR 路由：语种覆盖 / 强制指定 / 环境变量优先级 / 容错 | 纯函数 |
-| `test_summary_e2e_selfcontained.py` | **全链路**：多文件上传→串行队列→跨录音统一→合并→自动纪要→导出→删除 | 假 ASR + 假 LLM |
-| `test_transcript_editing.py` | 校对 / 改名 / **导出用显示名** / 且不误改其它段 / 404 语义 | 假 ASR |
-| `test_edge_cases.py` | 分批上传 / 空项目 / 内容非音频 / 特殊文件名与导出净化 / 重命名 | 假 ASR |
-| `test_evidence_chain.py` | 证据链：时间归一化 / 容差 / **防编造** / 去重 / 向后兼容 | 纯函数 |
-| `frontend_verify.mjs` | 结构化解析 / 降级路径 / XSS 转义 / 时间格式化 | vite 转译 |
+| `test_summary_e2e_selfcontained.py` | **全链路**：上传→串行队列→跨录音统一→合并→纪要→导出→删除 | 假 ASR + 假 LLM |
+| `test_save_protocol.py` | 保存协议：修订号 / 并发 / 改动计数口径 | 假 ASR |
+| `test_evidence_chain.py` | 证据链：时间归一化 / 容差 / **防编造** / 去重 | 纯函数 |
+| `test_transcript_editing.py` | 校对 / 改名 / **导出用显示名** / 404 语义 | 假 ASR |
+| `test_edge_cases.py` | 分批上传 / 空项目 / 非音频内容 / 特殊文件名 | 假 ASR |
+| `test_meeting_summary.py` | LLM 输出容错：代码围栏 / 夹带解释 / 降级 / 重试 | 注入假 LLM |
+| `test_llm_config_check.py` | 配置体检：缺 key / 占位符 / 模型名笔误 | 纯函数 |
+| `test_routing.py` | ASR 路由：语种覆盖 / 强制指定 / 环境变量优先级 | 纯函数 |
+| `frontend_verify.mjs` | 结构化解析 / 降级路径 / XSS 转义 / 说话人配色 | vite 转译 |
 
 <details>
 <summary>需要外部条件的测试</summary>
 
 ```bash
-# 真实音频端到端（需后端已启动，用 samples/ 的音频真跑一遍）
-.venv\Scripts\python.exe backend\tests\acceptance_e2e.py
-
-# LLM 真实连通性（填好 key 后跑，只发一次最小请求）
-.venv\Scripts\python.exe backend\tests\check_llm_live.py
-
-# 质量与性能量化报告
-.venv\Scripts\python.exe backend\tests\quality_metrics.py <会议ID>
+.venv\Scripts\python.exe backend\tests\acceptance_e2e.py     # 真实音频端到端（需启动后端）
+.venv\Scripts\python.exe backend\tests\check_llm_live.py     # LLM 真实连通性（只发一次请求）
 ```
 
-> `CCASR_LLM_FAKE=1` 可让后端使用**假 LLM 客户端**，仅用于验证纪要链路。默认关闭，生产部署不受影响。
+> `CCASR_LLM_FAKE=1` 可让后端使用**假 LLM 客户端**，仅用于验证纪要链路，默认关闭。
 
 </details>
 
@@ -476,65 +370,45 @@ cd app && npm run lint        # ESLint
 <details>
 <summary><b>模型加载很慢？</b></summary>
 
-首次运行需从 ModelScope 下载模型（~1GB），之后走缓存。首次启动看起来像"卡住"是正常的。
+首次运行需从 ModelScope 下载模型（~1GB），之后走缓存。首次启动看起来像「卡住」是正常的。
 </details>
 
 <details>
 <summary><b>说话人分离不准 / 所有人都是同一个 SPEAKER？</b></summary>
 
-聚类失败时会降级为单一说话人，日志中出现 `声纹聚类失败`。判据是**特征间隙（eigengap）**：样本过少或片段普遍过短时会判不准。若持续出现请附日志反馈。
-</details>
-
-<details>
-<summary><b>多段录音里同一个人被编成不同的 SPEAKER_x？</b></summary>
-
-正常情况下不应发生——队列结束后会自动做**跨录音全局重聚类**。若仍出现，检查各段录音是否有足够长的语音（< 1 秒的片段不参与全局聚类）。
+聚类失败时会降级为单一说话人，日志中出现 `声纹聚类失败`。判据是**特征间隙（eigengap）**，
+样本过少或片段普遍过短时会判不准。多段录音里同一个人被编成不同 `SPEAKER_x` 则不应发生——
+队列结束后会自动全局重聚类，若仍出现请检查各段是否有足够长的语音（< 1 秒的片段不参与）。
 </details>
 
 <details>
 <summary><b>会议纪要没生成？</b></summary>
 
-先看 `GET /health` 的 `llm` 字段，它会直接指出问题。常见原因：key 未填/仍是占位符、模型名笔误（例如 DeepSeek 并没有 `deepseek-flash`，应为 `deepseek-chat`）。**转录本身不需要 LLM，不受影响。**
-</details>
-
-<details>
-<summary><b>纪要生成失败会影响转录结果吗？</b></summary>
-
-不会。转录是独立阶段，纪要在其后执行且失败被捕获，状态标记 `summary_state=failed`，转录与合并文档照常可用。已生成转录的会议可在纪要 Tab 点「重新生成」，**不需要重跑转录**。
+先看 `GET /health` 的 `llm` 字段，它会直接指出问题（key 未填/占位符、模型名笔误）。
+**转录本身不需要 LLM，不受影响**；纪要失败只标记 `summary_state=failed`，
+已转录的会议可在纪要页点「重新生成」，**不需要重跑转录**。
 </details>
 
 <details>
 <summary><b>纪要里的证据徽章数量比章节数少？</b></summary>
 
-这是**预期行为**。时间戳会逐条校验，只有当该时间点附近真的存在转录片段时才生成证据——找不到明确出处的章节就不给证据，避免编造。
+这是**预期行为**。时间戳逐条校验，只有当该时间点附近真的存在转录片段时才生成证据——
+找不到明确出处的章节就不给证据，避免编造。
 </details>
 
 <details>
-<summary><b>GPU 没被用上？</b></summary>
+<summary><b>GPU 没被用上？/ Debug 模式？/ 参考材料有什么用？</b></summary>
 
-`/health` 的 `device` 字段显示实际设备。无 NVIDIA GPU 时自动回退 CPU（多核并行），MPS 仅 macOS Apple Silicon 可用。
+- `/health` 的 `device` 字段显示实际设备；无 NVIDIA GPU 时自动回退 CPU（多核），MPS 仅 macOS Apple Silicon 可用。
+- Debug：`.venv\Scripts\python.exe run_server.py --debug` 或 `CCASR_DEBUG=1`。
+- 参考材料：上传议程、参会名单等，纪要生成时作为背景信息，有助于理解人名与专有名词；在纪要页上传后点「重新生成」。
 </details>
 
 <details>
 <summary><b>豆包云端后端能用吗？</b></summary>
 
-**当前流程不可用**，请勿开启 `CCASR_ASR_ROUTING=doubao`。火山引擎只接受**公网音频 URL**，与"上传本地录音"的流程不兼容，会在每个任务上报错。接口实现保留，待接入对象存储后再启用。
-</details>
-
-<details>
-<summary><b>Debug 模式？</b></summary>
-
-```bash
-.venv\Scripts\python.exe run_server.py --debug
-# 或
-CCASR_DEBUG=1
-```
-</details>
-
-<details>
-<summary><b>参考材料有什么用？</b></summary>
-
-上传议程、参会名单等材料后，纪要生成时会作为背景信息，有助于正确理解人名、议题与专有名词。在纪要 Tab 上传，然后点「重新生成」。
+**当前流程不可用**，请勿开启 `CCASR_ASR_ROUTING=doubao`。火山引擎只接受**公网音频 URL**，
+与「上传本地录音」的流程不兼容。接口实现保留，待接入对象存储后再启用。
 </details>
 
 ---
@@ -547,7 +421,7 @@ CCASR_DEBUG=1
 | 非中英日韩粤语种 | 自动切 faster-whisper，但**该路径不做说话人分离** |
 | 说话人数量 | 自动判定（eigengap），最多 10 人。人数极多或片段极短时可能不准 |
 | 并发 | 同一会议队列**串行**；运行中不能追加录音 |
-| 时间轴基线 | `duration` 记录的是**有效语音结束时间**，不是音频文件字节长度（两者可能差几十秒的尾部静音） |
+| 时间轴基线 | `duration` 是**有效语音结束时间**，不是音频文件字节长度（可能差几十秒尾部静音） |
 | 波形图 | 合并转录视图不显示波形（跨多个音频文件），但可正常播放与定位 |
 
 ---

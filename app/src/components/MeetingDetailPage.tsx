@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import * as api from '../services/api';
-import { formatDuration, formatTime } from '../utils/format';
+import {
+  formatDuration, formatTime, buildSpeakerColorMap, taskLabel, taskTone,
+} from '../utils/format';
 import {
   editReducer, emptyEditState, computeChanges, totalChanges,
 } from '../utils/editState';
 import SummaryView from './SummaryView';
 import TranscriptWorkspace from './TranscriptWorkspace';
-import type { Project, MergedTranscript } from '../types';
+import AudioBar from './AudioBar';
+import Logo from './Logo';
+import { Badge, Banner, EmptyState, Progress } from './ui';
+import type { Project, MergedTranscript, Recording } from '../types';
 
 type Tab = 'summary' | 'transcript' | 'recordings';
 
@@ -90,7 +95,7 @@ export default function MeetingDetailPage() {
       audio.currentTime = Math.max(0, localStart);
       audio.play().catch(() => { /* 忽略自动播放限制 */ });
     }
-  }, [projectId]);
+  }, [audioRef, projectId]);
 
   // ── 加载项目 ─────────────────────────────────────────────────
   const loadProject = useCallback(async () => {
@@ -334,78 +339,119 @@ export default function MeetingDetailPage() {
     }
   };
 
-  if (loading) return <div style={S.center}>加载中…</div>;
+  const retryFailed = async () => {
+    if (!projectId) return;
+    try {
+      await api.startQueue(projectId);
+      await loadProject();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '重试失败');
+    }
+  };
+
+  /**
+   * 说话人颜色表：按**出现顺序**给这场会议的每个人分配互不重复的颜色。
+   * 页面层构建一次后向下传递 —— 转录行、说话人工具条、纪要分栏、
+   * 批量改判预览因此永远同人同色。
+   */
+  const speakerColors = useMemo(() => {
+    const ordered: string[] = [];
+    const push = (s: string) => { if (s && !ordered.includes(s)) ordered.push(s); };
+    edit.segments.forEach((s) => push(s.speaker));
+    Object.keys(edit.names).forEach(push);
+    return buildSpeakerColorMap(ordered);
+  }, [edit.segments, edit.names]);
+
+  if (loading) {
+    return (
+      <div className="detail">
+        <EmptyState animatedLogo title="正在加载会议…" />
+      </div>
+    );
+  }
   if (!project) {
     return (
-      <div style={S.center}>
-        <p>{error || '会议不存在'}</p>
-        <Link to="/meetings" className="btn btn-secondary">返回列表</Link>
+      <div className="detail">
+        <EmptyState
+          icon="🔍"
+          title={error || '会议不存在'}
+          actions={<Link to="/meetings" className="btn btn-secondary">返回列表</Link>}
+        />
       </div>
     );
   }
 
   /** 已经有录音了 —— 上传区可以收起来，正文更重要 */
   const hasRecordings = (project.recordings?.length ?? 0) > 0;
-
   const structured = summaryRaw ? api.parseStructuredSummary(summaryRaw) : null;
+  const currentLabel = currentRec
+    ? (project.recordings?.find((r) => r.recording_id === currentRec)?.filename
+      ?? transcript?.recordings.find((r) => r.recording_id === currentRec)?.filename
+      ?? '—')
+    : undefined;
 
   return (
-    <div style={S.page}>
-      {/* 头部 */}
-      <div style={S.header}>
-        <div style={S.headerLeft}>
-          <Link to="/meetings" style={S.back}>← 我的会议</Link>
-          <h2 style={S.title} onClick={handleRename} title="点击重命名">
+    <div className="container detail">
+      {/* ── 页头：返回 / 标题 / 元信息 / 操作 ── */}
+      <div className="detail-head">
+        <div className="head-left">
+          <Link to="/meetings" className="back-link">← 我的会议</Link>
+          <h1 className="detail-title" onClick={handleRename} title="点击重命名">
             {project.name}
-          </h2>
-          <span style={S.headerMeta}>
+          </h1>
+          <span className="detail-meta">
             {project.recording_count} 段录音
             {project.total_duration > 0 && ` · ${formatDuration(project.total_duration)}`}
+            {transcript && transcript.num_speakers > 0
+              && ` · ${transcript.num_speakers} 位说话人`}
           </span>
         </div>
-        <div style={S.headerRight}>
+        <div className="head-right">
           {project.has_summary && (
-            <button className="btn btn-secondary" style={S.sm}
-                    onClick={handleExportSummary}>
+            <button className="btn btn-secondary btn-sm" onClick={handleExportSummary}>
               ⬇ 导出纪要
             </button>
           )}
         </div>
       </div>
 
-      {error && <div style={S.error}>{error}</div>}
-
-      {/* 整体进度 */}
-      {busy && (
-        <div style={S.busyBar}>
-          <div style={S.busyTrack}>
-            <div style={{ ...S.busyFill, width: `${Math.round(project.progress * 100)}%` }} />
-          </div>
-          <span style={S.busyText}>
-            {project.state === 'summarizing'
-              ? `正在生成会议纪要 ${Math.round(project.summary_progress * 100)}%`
-              : `正在转录 ${project.done_count}/${project.recording_count} 段…`}
-          </span>
-        </div>
+      {error && (
+        <Banner tone="err" right={(
+          <button className="btn btn-ghost btn-xs" onClick={() => setError('')}>知道了</button>
+        )}>
+          {error}
+        </Banner>
       )}
 
-      {/* 上传区 —— 已有录音时默认收成一行，把空间让给正文 */}
+      {/* ── 整体进度 ── */}
+      {busy && (
+        <Progress
+          value={(project.state === 'summarizing'
+            ? project.summary_progress : project.progress) * 100}
+          label={(
+            <>
+              <Logo size={16} animated />
+              {project.state === 'summarizing'
+                ? `正在生成会议纪要 ${Math.round(project.summary_progress * 100)}%`
+                : `正在转录 ${project.done_count}/${project.recording_count} 段…`}
+            </>
+          )}
+        />
+      )}
+
+      {/* ── 上传区：已有录音时默认收成一行，把空间让给正文 ── */}
       {hasRecordings && !addOpen ? (
-        <div style={S.addCollapsed}>
-          <button
-            className="btn btn-secondary"
-            style={S.addBtn}
-            onClick={() => setAddOpen(true)}
-          >
+        <div className="add-collapsed">
+          <button className="btn btn-secondary btn-sm" onClick={() => setAddOpen(true)}>
             ＋ 添加录音
           </button>
-          <span style={S.addHint}>
+          <span className="hint">
             已有 {project.recording_count} 段录音；追加的录音会排在队尾
           </span>
         </div>
       ) : (
         <div
-          style={{ ...S.drop, ...(dragOver ? S.dropActive : {}) }}
+          className={`drop${dragOver ? ' on' : ''}`}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={(e) => {
@@ -419,16 +465,16 @@ export default function MeetingDetailPage() {
             style={{ display: 'none' }}
             onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
           />
-          <div style={{ fontSize: 26, marginBottom: 4 }}>＋</div>
-          <div style={S.dropText}>
+          <div className="drop-plus">＋</div>
+          <div className="drop-text">
             点击或拖拽音频到此处，<b>可一次选多个</b>
           </div>
-          <div style={S.dropHint}>
+          <div className="drop-hint">
             支持 {ACCEPT.replace(/\./g, '').toUpperCase()}；多个文件将按文件名顺序排队转录
           </div>
           {hasRecordings && (
             <button
-              style={S.collapseBtn}
+              className="collapse-btn"
               onClick={(e) => { e.stopPropagation(); setAddOpen(false); }}
             >
               收起
@@ -438,31 +484,32 @@ export default function MeetingDetailPage() {
       )}
 
       {files.length > 0 && (
-        <div style={S.queue}>
-          <div style={S.queueHead}>
+        <div className="queue">
+          <div className="queue-head">
             <span>待上传 {files.length} 个文件（按文件名顺序排队）</span>
-            <button style={S.clearBtn} onClick={() => setFiles([])}>清空</button>
+            <button className="link-btn" onClick={() => setFiles([])}>清空</button>
           </div>
-          <ol style={S.fileList}>
+          <ol className="queue-list">
             {[...files]
               .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true }))
               .map((f, i) => (
-                <li key={i} style={S.fileItem}>
-                  <span style={S.fileIdx}>{i + 1}</span>
-                  <span style={S.fileName}>{f.name}</span>
-                  <span style={S.fileSize}>{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+                <li key={i} className="queue-item">
+                  <span className="idx">{i + 1}</span>
+                  <span className="fname">{f.name}</span>
+                  <span className="fsize">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
                   <button
-                    style={S.clearBtn}
+                    className="link-btn"
+                    aria-label={`移除 ${f.name}`}
                     onClick={() => setFiles((p) => p.filter((x) => x !== f))}
                   >✕</button>
                 </li>
               ))}
           </ol>
-          <div style={S.queueActions}>
-            <label style={S.langLabel}>
+          <div className="queue-actions">
+            <label className="lang">
               语种
               <select
-                style={S.select}
+                className="field field-sm"
                 value={language}
                 onChange={(e) => setLanguage(e.target.value)}
               >
@@ -472,7 +519,7 @@ export default function MeetingDetailPage() {
               </select>
             </label>
             <button
-              className="btn btn-primary"
+              className="btn btn-primary btn-sm"
               onClick={() => handleUpload(true)}
               disabled={uploading}
             >
@@ -482,36 +529,43 @@ export default function MeetingDetailPage() {
         </div>
       )}
 
-      {/* Tabs */}
-      <div style={S.tabs}>
+      {/* ── 分段控件：下划线式 Tab ── */}
+      <div className="lab-tabs detail-tabs">
         {([
-          ['summary', '📝 会议纪要'],
-          ['transcript', '📄 合并转录'],
-          ['recordings', `🎧 录音 (${project.recording_count})`],
+          ['summary', '会议纪要'],
+          ['transcript', '合并转录'],
+          ['recordings', '录音'],
         ] as [Tab, string][]).map(([k, label]) => (
           <button
             key={k}
-            style={{ ...S.tab, ...(tab === k ? S.tabActive : {}) }}
+            className={`lab-tab${tab === k ? ' on' : ''}`}
+            aria-current={tab === k}
             onClick={() => setTab(k)}
           >
             {label}
+            {k === 'recordings' && (
+              <span className="cnt">{project.recording_count}</span>
+            )}
           </button>
         ))}
       </div>
 
-      {/* 共享播放器：纪要证据跳转与转录点击播放共用同一个 <audio> */}
-      <div style={S.playerBar}>
-        <audio ref={audioRef} controls style={{ width: '100%', height: 34 }} />
-        {currentRec && (
-          <span style={S.nowPlaying}>
-            当前：{project.recordings?.find((r) => r.recording_id === currentRec)?.filename
-              ?? transcript?.recordings.find((r) => r.recording_id === currentRec)?.filename
-              ?? '—'}
-          </span>
-        )}
-      </div>
+      {/* ── 共享播放器：纪要证据跳转与转录点击播放共用同一个 <audio> ── */}
+      <audio ref={audioRef} preload="metadata" style={{ display: 'none' }}>
+        您的浏览器不支持音频播放。
+      </audio>
+      <AudioBar
+        audioRef={audioRef}
+        recordingId={currentRec}
+        label={currentLabel}
+        hasAudio={hasRecordings}
+        onRequestFirst={() => {
+          const first = project.recordings?.[0];
+          if (first) playAt(first.recording_id, 0);
+        }}
+      />
 
-      <div style={S.tabBody}>
+      <div className="detail-body">
         {tab === 'summary' && (
           <SummaryPanel
             project={project}
@@ -521,82 +575,74 @@ export default function MeetingDetailPage() {
             onReference={handleReference}
             onJumpTo={handleJumpToRef}
             stale={summaryStale}
+            speakerColors={speakerColors}
           />
         )}
 
         {tab === 'transcript' && (
           transcript && transcript.segments.length > 0 ? (
-            <div style={{ height: '100%' }}>
-              <TranscriptWorkspace
-                projectId={project.project_id}
-                transcript={transcript}
-                edit={edit}
-                dispatch={dispatch}
-                onSaved={handleTranscriptSaved}
-                activeSegId={activeSegId}
-                onPlay={playAt}
-                onExportWithDraft={(fmt) => setPendingExport(fmt)}
-              />
-            </div>
+            <TranscriptWorkspace
+              projectId={project.project_id}
+              transcript={transcript}
+              edit={edit}
+              dispatch={dispatch}
+              onSaved={handleTranscriptSaved}
+              activeSegId={activeSegId}
+              onPlay={playAt}
+              onExportWithDraft={(fmt) => setPendingExport(fmt)}
+              speakerColors={speakerColors}
+            />
           ) : (
-            <div style={S.placeholder}>
-              {project.recording_count === 0
+            <EmptyState
+              animatedLogo={busy}
+              icon="📄"
+              title={project.recording_count === 0
                 ? '还没有录音，先在上方添加'
-                : busy ? '转录进行中，完成后可查看合并文档'
-                       : '尚无已完成的录音'}
-            </div>
+                : busy ? '转录进行中…' : '尚无已完成的录音'}
+              hint={busy
+                ? '完成后这里会显示按时间轴合并的完整文档，可直接校对、改判说话人。'
+                : '导入录音后系统会自动排队转录，并把多段录音合并成同一份文档。'}
+              actions={project.recording_count === 0 ? (
+                <button className="btn btn-primary btn-sm" onClick={() => setAddOpen(true)}>
+                  ＋ 添加录音
+                </button>
+              ) : undefined}
+            />
           )
         )}
 
         {tab === 'recordings' && (
-          <div style={S.recList}>
-            {(project.recordings || []).map((r) => (
-              <div key={r.recording_id} style={S.recRow}>
-                <span style={S.recOrder}>#{r.order + 1}</span>
-                <span style={S.recName}>{r.filename}</span>
-                <span style={{ ...S.recState, ...recStateStyle(r.state) }}>
-                  {recStateLabel(r.state)}
-                </span>
-                {r.duration > 0 && <span style={S.recDur}>{formatTime(r.duration)}</span>}
-                {r.error && (
-                  <span style={S.recErr} title={r.error}>⚠ {r.error.slice(0, 40)}</span>
-                )}
-              </div>
-            ))}
-            {project.recordings?.some((r) => r.state === 'failed') && (
-              <button
-                className="btn btn-secondary"
-                style={{ marginTop: 12 }}
-                onClick={async () => {
-                  await api.startQueue(project.project_id);
-                  loadProject();
-                }}
-              >
-                ↻ 重试失败项
-              </button>
-            )}
-          </div>
+          <RecordingsTab
+            recordings={project.recordings || []}
+            onRetryAll={retryFailed}
+            onAdd={() => setAddOpen(true)}
+          />
         )}
       </div>
 
       {/* 导出前提示保存（有未保存修改时） */}
       {pendingExport && (
-        <div style={S.overlay} onClick={() => setPendingExport(null)}>
-          <div style={S.dialog} onClick={(e) => e.stopPropagation()}>
-            <div style={S.dialogTitle}>还有未保存的修改</div>
-            <div style={S.dialogBody}>
+        <div className="overlay" onClick={() => setPendingExport(null)}>
+          <div className="dialog" onClick={(e) => e.stopPropagation()}
+               role="dialog" aria-modal="true" aria-label="还有未保存的修改">
+            <div className="dialog-head">
+              <span className="dialog-title">还有未保存的修改</span>
+              <button className="x" title="关闭"
+                      onClick={() => setPendingExport(null)}>✕</button>
+            </div>
+            <div className="dialog-body">
               直接导出会得到<b>修改前</b>的内容。要先保存再导出吗？
             </div>
-            <div style={S.dialogFoot}>
-              <button className="btn btn-secondary" style={S.dialogBtn}
+            <div className="dialog-foot">
+              <button className="btn btn-secondary btn-sm"
                       onClick={() => setPendingExport(null)}>
                 取消
               </button>
-              <button className="btn btn-secondary" style={S.dialogBtn}
+              <button className="btn btn-secondary btn-sm"
                       onClick={() => { void doExport(pendingExport); }}>
                 仍导出旧内容
               </button>
-              <button className="btn btn-primary" style={S.dialogBtn}
+              <button className="btn btn-primary btn-sm"
                       onClick={async () => {
                         const fmt = pendingExport;
                         await saveDraft();
@@ -612,10 +658,86 @@ export default function MeetingDetailPage() {
   );
 }
 
+// ── 录音队列 ─────────────────────────────────────────────────
+
+function RecordingsTab({
+  recordings, onRetryAll, onAdd,
+}: {
+  recordings: Recording[];
+  onRetryAll: () => void;
+  onAdd: () => void;
+}) {
+  if (recordings.length === 0) {
+    return (
+      <EmptyState
+        animatedLogo
+        title="录音队列是空的"
+        hint="拖拽音频到上方上传区（可一次选多个），文件会按名称顺序排队转录；转录完成后自动生成纪要。"
+        actions={(
+          <button className="btn btn-primary btn-sm" onClick={onAdd}>
+            ＋ 添加录音
+          </button>
+        )}
+      />
+    );
+  }
+
+  const failed = recordings.filter((r) => r.state === 'failed').length;
+
+  return (
+    <>
+      <div className="rec-list">
+        {recordings.map((r) => (
+          <div
+            key={r.recording_id}
+            className={`rec${r.state === 'failed' ? ' failed' : ''}`}
+          >
+            <span className="idx">#{r.order + 1}</span>
+            <span className="fname" title={r.filename}>{r.filename}</span>
+            <span className="dur">{r.duration > 0 ? formatTime(r.duration) : '—'}</span>
+            <span className="st">
+              {/* 失败行内联原因 + 重试，无需展开即可操作 */}
+              {r.state === 'failed' && (
+                <>
+                  {r.error && (
+                    <span className="err-reason" title={r.error}>{r.error}</span>
+                  )}
+                  <button className="btn btn-secondary btn-sm" onClick={onRetryAll}>
+                    重试
+                  </button>
+                </>
+              )}
+              <Badge tone={taskTone(r.state)} dot={r.state === 'processing'}>
+                {taskLabel(r.state)}
+                {r.state === 'processing' && r.progress > 0
+                  && ` ${Math.round(r.progress * 100)}%`}
+              </Badge>
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="rec-foot">
+        <span>
+          共 {recordings.length} 段
+          {failed > 0 && ` · ${failed} 段失败`}
+          {' · '}识别语种 {LANGS.find((l) => l.value === recordings[0].language)?.label
+            ?? recordings[0].language}
+        </span>
+        {failed > 0 && (
+          <button className="btn btn-secondary btn-sm" onClick={onRetryAll}>
+            ↻ 重试失败项
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
 // ── 纪要面板 ─────────────────────────────────────────────────
 
 function SummaryPanel({
-  project, raw, structured, onRegenerate, onReference, onJumpTo, stale,
+  project, raw, structured, onRegenerate, onReference, onJumpTo, stale, speakerColors,
 }: {
   project: Project;
   raw: string | null;
@@ -625,52 +747,56 @@ function SummaryPanel({
   onJumpTo?: (ref: { start: number; recording_id?: string; recording_index?: number }) => void;
   /** 转录在纪要生成之后被改过 —— 提示需要重新生成 */
   stale?: boolean;
+  speakerColors?: Record<string, string>;
 }) {
   const refInput = useRef<HTMLInputElement>(null);
 
   if (project.summary_state === 'processing') {
     return (
-      <div style={S.placeholder}>
-        <div style={{ fontSize: 30, marginBottom: 10 }}>🤖</div>
-        <div>正在生成会议纪要… {Math.round(project.summary_progress * 100)}%</div>
-      </div>
+      <EmptyState
+        animatedLogo
+        title={`正在生成会议纪要… ${Math.round(project.summary_progress * 100)}%`}
+        hint="模型会按议题拆分要点，并为每一条结论关联可回听的原声证据。"
+      />
     );
   }
 
   if (!raw) {
     return (
-      <div style={S.placeholder}>
-        <div style={{ fontSize: 30, marginBottom: 10 }}>📝</div>
-        <div>
-          {project.recording_count === 0
-            ? '添加录音后，转录完成会自动生成会议纪要'
-            : '会议纪要将在一段录音全部转录完成后自动生成'}
-        </div>
-        {project.summary_error && (
-          <div style={{ ...S.error, marginTop: 14, display: 'inline-block' }}>
-            {project.summary_error}
-          </div>
-        )}
-      </div>
+      <EmptyState
+        animatedLogo
+        title={project.recording_count === 0
+          ? '添加录音后，转录完成会自动生成会议纪要'
+          : '会议纪要将在一段录音全部转录完成后自动生成'}
+        hint="生成后可在「合并转录」里核对原文，说话人改名会自动同步到纪要。"
+        actions={project.summary_error ? (
+          <Banner tone="err">{project.summary_error}</Banner>
+        ) : undefined}
+      />
     );
   }
 
   return (
-    <div style={S.summaryWrap}>
+    <div className="sum-wrap">
       {stale && (
-        <div style={S.staleBanner}>
-          <span>⚠ 转录已在生成纪要之后被修改，当前纪要可能已过时。</span>
-          <button className="btn btn-secondary"
-                  style={{ padding: '3px 10px', fontSize: 12, borderRadius: 8 }}
-                  onClick={onRegenerate}>
-            重新生成纪要
-          </button>
-        </div>
+        <Banner
+          tone="warn"
+          right={(
+            <button className="btn btn-secondary btn-xs" onClick={onRegenerate}>
+              重新生成纪要
+            </button>
+          )}
+        >
+          ⚠ 转录已在生成纪要之后被修改，当前纪要可能已过时。
+        </Banner>
       )}
-      <div style={S.summaryBar}>
+
+      <div className="sum-bar">
         {project.reference_name
-          ? <span style={S.refChip}>📎 {project.reference_name}</span>
-          : <span style={S.refChipMuted}>未提供参考材料</span>}
+          ? <span className="ref-chip" title={project.reference_name}>
+              📎 {project.reference_name}
+            </span>
+          : <span className="ref-muted">未提供参考材料</span>}
         <input
           ref={refInput} type="file" accept=".md,.txt,.markdown" style={{ display: 'none' }}
           onChange={(e) => {
@@ -679,168 +805,18 @@ function SummaryPanel({
             e.target.value = '';
           }}
         />
-        <button className="btn btn-secondary" style={S.sm}
+        <button className="btn btn-secondary btn-sm"
                 onClick={() => refInput.current?.click()}>
           上传参考材料
         </button>
-        <button className="btn btn-secondary" style={S.sm} onClick={onRegenerate}>
+        <button className="btn btn-secondary btn-sm" onClick={onRegenerate}>
           ↻ 重新生成
         </button>
       </div>
+
       {structured
-        ? <SummaryView data={structured} onJumpTo={onJumpTo} />
-        : <pre style={S.mdFallback}>{raw}</pre>}
+        ? <SummaryView data={structured} onJumpTo={onJumpTo} speakerColors={speakerColors} />
+        : <pre className="md-fallback">{raw}</pre>}
     </div>
   );
 }
-
-function recStateLabel(s: string) {
-  return { pending: '排队中', processing: '转录中', completed: '完成', failed: '失败' }[s] || s;
-}
-function recStateStyle(s: string): React.CSSProperties {
-  switch (s) {
-    case 'completed': return { background: '#e6f7f4', color: '#2a9d8f' };
-    case 'failed': return { background: '#ffeef0', color: '#e94560' };
-    case 'processing': return { background: '#eef0ff', color: '#4361ee' };
-    default: return { background: '#f2f2f7', color: '#888' };
-  }
-}
-
-const S: Record<string, React.CSSProperties> = {
-  page: { maxWidth: 1100, margin: '0 auto', height: '100%', display: 'flex', flexDirection: 'column' },
-  center: { textAlign: 'center', padding: '80px 0', color: '#888' },
-  header: {
-    display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end',
-    gap: 12, flexWrap: 'wrap', marginBottom: 14,
-  },
-  headerLeft: { display: 'flex', flexDirection: 'column', gap: 2 },
-  headerRight: { display: 'flex', gap: 8 },
-  back: { fontSize: 12.5, color: '#4361ee', textDecoration: 'none' },
-  title: { fontSize: 20, fontWeight: 700, color: '#1a1a2e', cursor: 'pointer' },
-  headerMeta: { fontSize: 12.5, color: '#888' },
-  sm: { padding: '5px 12px', fontSize: 12.5 },
-  playerBar: {
-    display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0,
-    padding: '6px 0 10px', borderBottom: '1px solid #e6e6ee', marginBottom: 8,
-  },
-  nowPlaying: { fontSize: 12, color: '#888', whiteSpace: 'nowrap' },
-  overlay: {
-    position: 'fixed', inset: 0, background: 'rgba(20,22,40,.35)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200,
-  },
-  dialog: {
-    width: 380, maxWidth: '92vw', background: '#fff', borderRadius: 12,
-    boxShadow: '0 12px 40px rgba(0,0,0,.18)', overflow: 'hidden',
-  },
-  dialogTitle: {
-    padding: '13px 16px', fontSize: 14.5, fontWeight: 700,
-    color: '#2b2b38', borderBottom: '1px solid #eee',
-  },
-  dialogBody: { padding: '14px 16px', fontSize: 13, color: '#555', lineHeight: 1.7 },
-  dialogFoot: {
-    display: 'flex', justifyContent: 'flex-end', gap: 8,
-    padding: '12px 16px', borderTop: '1px solid #eee', background: '#fcfcfd',
-  },
-  dialogBtn: { padding: '6px 14px', fontSize: 12.5, borderRadius: 8 },
-  addCollapsed: {
-    display: 'flex', alignItems: 'center', gap: 12,
-    margin: '0 0 12px', flexShrink: 0,
-  },
-  addBtn: { padding: '6px 14px', fontSize: 12.5, borderRadius: 8 },
-  addHint: { fontSize: 12, color: '#999' },
-  collapseBtn: {
-    position: 'absolute', top: 8, right: 10, fontSize: 11.5,
-    color: '#999', background: '#fff', border: '1px solid #e2e2ee',
-    borderRadius: 8, padding: '2px 9px', cursor: 'pointer',
-  },
-  staleBanner: {
-    display: 'flex', alignItems: 'center', gap: 10,
-    padding: '8px 14px', margin: '0 0 12px',
-    background: '#fff8e6', border: '1px solid #f0d9a0',
-    borderRadius: 8, fontSize: 12.5, color: '#8a6100',
-  },
-  error: {
-    padding: '10px 14px', background: '#fff0f0', border: '1px solid #ffcccc',
-    borderRadius: 8, color: '#cc3333', fontSize: 13, marginBottom: 12,
-  },
-  busyBar: { marginBottom: 14 },
-  busyTrack: { height: 6, background: '#eee', borderRadius: 3, overflow: 'hidden' },
-  busyFill: { height: '100%', background: '#4361ee', transition: 'width .3s' },
-  busyText: { fontSize: 12, color: '#666', marginTop: 6, display: 'block' },
-  drop: {
-    border: '2px dashed #d0d0e0', borderRadius: 10, padding: '22px 16px',
-    textAlign: 'center', cursor: 'pointer', background: '#fafbff',
-    transition: 'border-color .15s, background .15s', marginBottom: 12,
-  },
-  dropActive: { borderColor: '#4361ee', background: '#eef0ff' },
-  dropText: { fontSize: 14, color: '#1a1a2e', fontWeight: 600 },
-  dropHint: { fontSize: 11.5, color: '#999', marginTop: 4 },
-  queue: {
-    border: '1px solid #e6e6ee', borderRadius: 10, padding: 12,
-    marginBottom: 12, background: '#fff',
-  },
-  queueHead: {
-    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    fontSize: 12.5, color: '#666', fontWeight: 600, marginBottom: 8,
-  },
-  clearBtn: {
-    border: 'none', background: 'none', color: '#999', cursor: 'pointer', fontSize: 12,
-  },
-  fileList: { listStyle: 'none', margin: 0, padding: 0, maxHeight: 180, overflowY: 'auto' },
-  fileItem: {
-    display: 'flex', alignItems: 'center', gap: 10,
-    padding: '5px 2px', fontSize: 12.5, borderBottom: '1px solid #f5f5fa',
-  },
-  fileIdx: {
-    background: '#eef0ff', color: '#4361ee', fontSize: 11, fontWeight: 700,
-    padding: '1px 7px', borderRadius: 4, flexShrink: 0,
-  },
-  fileName: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  fileSize: { color: '#aaa', fontSize: 11.5, flexShrink: 0 },
-  queueActions: {
-    display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
-    gap: 12, marginTop: 10,
-  },
-  langLabel: { fontSize: 12.5, color: '#666', display: 'flex', alignItems: 'center', gap: 6 },
-  select: {
-    padding: '5px 8px', fontSize: 12.5, fontFamily: 'inherit',
-    border: '1px solid #d8d8e0', borderRadius: 6, color: '#1a1a2e',
-  },
-  tabs: {
-    display: 'flex', gap: 4, borderBottom: '1px solid #e6e6ee', flexShrink: 0,
-  },
-  tab: {
-    border: 'none', background: 'none', padding: '9px 16px', fontSize: 13.5,
-    fontFamily: 'inherit', color: '#777', cursor: 'pointer', fontWeight: 600,
-    borderBottom: '2px solid transparent',
-  },
-  tabActive: { color: '#4361ee', borderBottomColor: '#4361ee' },
-  tabBody: { flex: 1, minHeight: 0, paddingTop: 0, overflow: 'auto' },
-  placeholder: { textAlign: 'center', padding: '70px 0', color: '#999', fontSize: 14 },
-  summaryWrap: { maxWidth: 940, margin: '0 auto', paddingTop: 16 },
-  summaryBar: {
-    display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18,
-    paddingBottom: 12, borderBottom: '1px solid #f0f0f5',
-  },
-  refChip: {
-    fontSize: 12, color: '#4361ee', background: '#eef0ff',
-    padding: '3px 10px', borderRadius: 12, marginRight: 'auto',
-  },
-  refChipMuted: { fontSize: 12, color: '#bbb', marginRight: 'auto' },
-  mdFallback: {
-    whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 14,
-    lineHeight: 1.9, color: '#333', margin: 0,
-  },
-  recList: { display: 'flex', flexDirection: 'column', paddingTop: 14 },
-  recRow: {
-    display: 'flex', alignItems: 'center', gap: 10, padding: '9px 4px',
-    borderBottom: '1px solid #f2f2f7', fontSize: 13,
-  },
-  recOrder: { color: '#bbb', fontSize: 12, width: 26, flexShrink: 0 },
-  recName: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  recState: {
-    fontSize: 11, fontWeight: 700, padding: '2px 9px', borderRadius: 10, flexShrink: 0,
-  },
-  recDur: { fontSize: 12, color: '#999', flexShrink: 0 },
-  recErr: { fontSize: 11.5, color: '#e94560', flexShrink: 0 },
-};

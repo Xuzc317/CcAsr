@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CcAsr UI 2.0 · 设计评审与优化方案</title>
+<style>
+  :root{
+    /* ===== CcAsr 2.0 Design Tokens ===== */
+    --paper:#FAFAF7; --surface:#FFFFFF; --surface-2:#F4F4EF; --surface-3:#EDEDE6;
+    --ink:#1B1B24; --ink-2:#55555F; --ink-3:#92929B; --ink-inverse:#FFFFFF;
+    --line:#E8E8E0; --line-strong:#D9D9CF;
+    --brand:#4F46E5; --brand-strong:#4038C7; --brand-soft:#EEF0FE; --brand-softer:#F6F7FF;
+    --grad-brand:linear-gradient(135deg,#4F46E5 0%,#8B5CF6 100%);
+    --success:#0E9F6E; --success-soft:#E4F5EE;
+    --warning:#B45309; --warning-soft:#FBF0DC;
+    --danger:#D92D20;  --danger-soft:#FCEBEA;
+    --info:#0369A1;    --info-soft:#E5F1FA;
+    --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px; --sp-7:48px; --sp-8:64px;
+    --r-sm:6px; --r-md:10px; --r-lg:14px; --r-xl:20px;
+    --shadow-sm:0 1px 2px rgba(27,27,36,.05);
+    --shadow-md:0 2px 6px rgba(27,27,36,.06),0 8px 24px rgba(27,27,36,.06);
+    --shadow-lg:0 4px 12px rgba(27,27,36,.08),0 16px 48px rgba(27,27,36,.12);
+    --font:"Inter","PingFang SC","Microsoft YaHei",-apple-system,"Segoe UI",sans-serif;
+    --mono:"JetBrains Mono","SF Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--font);background:var(--paper);color:var(--ink);line-height:1.6;-webkit-font-smoothing:antialiased}
+  .doc{max-width:1120px;margin:0 auto;padding:0 var(--sp-5) var(--sp-8)}
+  /* ===== Doc chrome ===== */
+  .doc-top{display:flex;align-items:center;gap:14px;padding:22px 0;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(250,250,247,.88);backdrop-filter:blur(10px);z-index:50}
+  .doc-top svg{flex-shrink:0}
+  .doc-top .name{font-size:17px;font-weight:700;letter-spacing:-.01em}
+  .doc-top .name span{color:var(--brand)}
+  .doc-top .tag{font-size:12px;color:var(--ink-3);border:1px solid var(--line);border-radius:99px;padding:2px 10px;margin-left:auto;white-space:nowrap}
+  .toc{display:flex;gap:6px;flex-wrap:wrap;padding:14px 0}
+  .toc a{font-size:12.5px;color:var(--ink-2);text-decoration:none;padding:5px 12px;border-radius:99px;border:1px solid var(--line);background:var(--surface);transition:.15s}
+  .toc a:hover{color:var(--brand);border-color:var(--brand);background:var(--brand-softer)}
+  section{padding:var(--sp-7) 0 8px}
+  .sec-kicker{font-size:12px;font-weight:600;color:var(--brand);letter-spacing:.12em;text-transform:uppercase;margin-bottom:6px}
+  h2{font-size:26px;font-weight:700;letter-spacing:-.02em;margin-bottom:8px}
+  .sec-lead{color:var(--ink-2);font-size:14.5px;max-width:760px;margin-bottom:var(--sp-5)}
+  h3{font-size:16px;font-weight:600;margin:var(--sp-6) 0 var(--sp-3)}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-5);box-shadow:var(--shadow-sm)}
+  /* ===== Review table ===== */
+  table.review{width:100%;border-collapse:separate;border-spacing:0;font-size:13.5px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+  table.review th{text-align:left;font-size:12px;color:var(--ink-3);font-weight:600;padding:12px 16px;background:var(--surface-2);border-bottom:1px solid var(--line);letter-spacing:.04em}
+  table.review td{padding:14px 16px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.65}
+  table.review tr:last-child td{border-bottom:none}
+  table.review td.dim{white-space:nowrap;font-weight:600;font-size:13px}
+  .pill{display:inline-block;font-size:11.5px;font-weight:600;padding:1px 9px;border-radius:99px;margin-right:4px}
+  .pill.bad{background:var(--danger-soft);color:var(--danger)}
+  .pill.mid{background:var(--warning-soft);color:var(--warning)}
+  .pill.good{background:var(--success-soft);color:var(--success)}
+  ul.tight{padding-left:18px;font-size:13.5px;color:var(--ink-2)}
+  ul.tight li{margin-bottom:4px}
+  /* ===== Tokens ===== */
+  .swatch-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+  .swatch{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden;box-shadow:var(--shadow-sm)}
+  .swatch .c{height:56px}
+  .swatch .t{padding:8px 10px;font-size:12px}
+  .swatch .t b{display:block;font-size:12.5px}
+  .swatch .t span{color:var(--ink-3);font-family:var(--mono);font-size:11px}
+  .tok-cols{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4)}
+  @media(max-width:860px){.tok-cols{grid-template-columns:1fr}}
+  pre.code{background:#23232E;color:#E8E8F0;border-radius:var(--r-md);padding:16px 18px;font-size:12px;line-height:1.7;overflow:auto;font-family:var(--mono)}
+  pre.code .cm{color:#8B8B9E}pre.code .k{color:#A5B4FC}pre.code .s{color:#A7F3D0}
+  /* ===== Component gallery ===== */
+  .comp-row{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+  .btn{display:inline-flex;align-items:center;gap:7px;font-family:var(--font);font-size:13.5px;font-weight:500;border-radius:var(--r-md);padding:8px 16px;border:1px solid transparent;cursor:pointer;transition:.15s}
+  .btn-pri{background:var(--brand);color:#fff;box-shadow:0 1px 2px rgba(79,70,229,.3)}
+  .btn-pri:hover{background:var(--brand-strong);transform:translateY(-1px);box-shadow:var(--shadow-md)}
+  .btn-sec{background:var(--surface);color:var(--ink);border-color:var(--line-strong)}
+  .btn-sec:hover{border-color:var(--brand);color:var(--brand);background:var(--brand-softer)}
+  .btn-ghost{background:transparent;color:var(--ink-2)}
+  .btn-ghost:hover{background:var(--surface-2);color:var(--ink)}
+  .btn-danger{background:var(--surface);color:var(--danger);border-color:#F2C4C0}
+  .btn-danger:hover{background:var(--danger-soft)}
+  .btn-sm{padding:5px 11px;font-size:12.5px;border-radius:var(--r-sm)}
+  .badge{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:2px 10px;border-radius:99px}
+  .badge i{width:6px;height:6px;border-radius:99px;background:currentColor;display:inline-block}
+  .b-ok{background:var(--success-soft);color:var(--success)}
+  .b-run{background:var(--brand-soft);color:var(--brand)}
+  .b-run i{animation:pulse 1.4s infinite}
+  .b-warn{background:var(--warning-soft);color:var(--warning)}
+  .b-err{background:var(--danger-soft);color:var(--danger)}
+  .b-mut{background:var(--surface-2);color:var(--ink-3)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .spk{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:3px 10px 3px 8px}
+  .spk i{width:8px;height:8px;border-radius:3px;display:inline-block}
+  .evi{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:11.5px;font-weight:500;color:var(--brand);background:var(--brand-soft);border:1px solid #DCE0FB;border-radius:99px;padding:2px 9px;cursor:pointer;transition:.15s}
+  .evi:hover{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-md);padding:3px}
+  .seg button{border:none;background:transparent;font-family:var(--font);font-size:13px;font-weight:500;color:var(--ink-2);padding:6px 16px;border-radius:8px;cursor:pointer;transition:.15s}
+  .seg button.on{background:var(--surface);color:var(--ink);box-shadow:var(--shadow-sm);font-weight:600}
+  .inp{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--r-md);padding:0 14px;height:40px;font-size:13.5px;color:var(--ink-3);transition:.15s}
+  .inp:focus-within{border-color:var(--brand);box-shadow:0 0 0 3px rgba(79,70,229,.12);color:var(--ink-3)}
+  /* ===== Browser mock frame ===== */
+  .frame{border-radius:var(--r-xl);border:1px solid var(--line-strong);background:var(--surface);box-shadow:var(--shadow-lg);overflow:hidden;margin-top:var(--sp-4)}
+  .frame-bar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--surface-2);border-bottom:1px solid var(--line)}
+  .frame-bar i{width:10px;height:10px;border-radius:99px;background:var(--line-strong)}
+  .frame-bar .url{flex:1;margin-left:10px;background:var(--surface);border:1px solid var(--line);border-radius:8px;font-size:11.5px;color:var(--ink-3);padding:3px 12px;font-family:var(--mono)}
+  .mock{padding:0}
+  .mock *{box-sizing:border-box}
+  .note{font-size:12.5px;color:var(--ink-3);margin-top:10px}
+  .anno{border-left:3px solid var(--brand);background:var(--brand-softer);border-radius:0 var(--r-md) var(--r-md) 0;padding:10px 14px;font-size:13px;color:var(--ink-2);margin-top:var(--sp-3)}
+  /* ===== Mock: header ===== */
+  .m-header{display:flex;align-items:center;gap:10px;padding:12px 24px;border-bottom:1px solid var(--line);background:var(--surface)}
+  .m-header .brandname{font-size:15px;font-weight:700}
+  .m-header .brandname em{font-style:normal;color:var(--brand)}
+  .m-header .sub{font-size:11.5px;color:var(--ink-3)}
+  /* ===== Mock: meeting list ===== */
+  .m-hero{padding:36px 40px 8px}
+  .m-hero h4{font-size:22px;font-weight:700;letter-spacing:-.01em}
+  .m-hero p{font-size:13px;color:var(--ink-2);margin-top:2px}
+  .m-create{display:flex;gap:10px;padding:20px 40px 8px}
+  .m-create .inp{flex:1;height:42px;color:var(--ink-3)}
+  .m-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;padding:16px 40px 36px}
+  @media(max-width:900px){.m-grid{grid-template-columns:1fr}}
+  .m-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px 18px;cursor:pointer;transition:.18s;position:relative}
+  .m-card:hover{border-color:#C9CCF5;box-shadow:var(--shadow-md);transform:translateY(-2px)}
+  .m-card .top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .m-card .nm{font-size:14.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .m-card .meta{display:flex;gap:14px;font-size:12px;color:var(--ink-3)}
+  .m-card .meta span{display:inline-flex;align-items:center;gap:4px}
+  .m-card .date{margin-top:10px;font-size:11px;color:var(--ink-3);font-family:var(--mono)}
+  .m-card .x{position:absolute;top:10px;right:12px;width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--ink-3);font-size:13px;opacity:0;transition:.15s}
+  .m-card:hover .x{opacity:1}
+  .m-card .x:hover{background:var(--danger-soft);color:var(--danger)}
+  /* ===== Mock: detail ===== */
+  .m-detail-head{display:flex;align-items:center;gap:14px;padding:18px 32px 0}
+  .m-detail-head .back{font-size:12.5px;color:var(--ink-3);text-decoration:none;display:flex;align-items:center;gap:4px}
+  .m-detail-head h4{font-size:19px;font-weight:700}
+  .m-detail-head .meta{font-size:12px;color:var(--ink-3);margin-top:1px}
+  .m-tabs{padding:16px 32px 0;border-bottom:1px solid var(--line)}
+  .m-tabs .inner{display:flex;gap:4px}
+  .m-tab{border:none;background:none;font-family:var(--font);font-size:13.5px;font-weight:500;color:var(--ink-2);padding:9px 14px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .m-tab.on{color:var(--brand);border-bottom-color:var(--brand);font-weight:600}
+  .m-tab .cnt{font-size:11px;color:var(--ink-3);margin-left:3px}
+  .m-player{display:flex;align-items:center;gap:12px;margin:16px 32px 0;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:10px 14px}
+  .m-play{width:34px;height:34px;border-radius:99px;background:var(--brand);color:#fff;border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;box-shadow:0 2px 6px rgba(79,70,229,.35)}
+  .m-prog{flex:1;height:6px;background:var(--surface-3);border-radius:99px;position:relative}
+  .m-prog i{position:absolute;left:0;top:0;bottom:0;width:34%;background:var(--grad-brand);border-radius:99px}
+  .m-prog b{position:absolute;left:34%;top:50%;transform:translate(-50%,-50%);width:12px;height:12px;background:#fff;border:3px solid var(--brand);border-radius:99px}
+  .m-time{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);white-space:nowrap}
+  .m-tool{display:flex;align-items:center;gap:8px;margin:14px 32px 0;flex-wrap:wrap}
+  .m-tool .stat{margin-left:auto;font-size:12px;color:var(--ink-3)}
+  .m-rec-div{display:flex;align-items:center;gap:10px;margin:16px 32px 0;background:var(--brand-softer);border:1px solid #E2E4FB;border-radius:var(--r-md);padding:8px 14px;font-size:12.5px}
+  .m-rec-div b{font-weight:600;color:var(--brand);background:var(--brand);color:#fff;font-size:11px;border-radius:6px;padding:1px 7px}
+  .m-rec-div .rg{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+  .m-rows{margin:6px 32px 28px;border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+  .m-row{display:flex;gap:12px;padding:9px 14px;border-bottom:1px solid var(--line);font-size:13px;align-items:baseline;transition:.12s;background:var(--surface)}
+  .m-row:last-child{border-bottom:none}
+  .m-row:hover{background:var(--brand-softer)}
+  .m-row .t{font-family:var(--mono);font-size:11px;color:var(--ink-3);width:42px;flex-shrink:0;padding-top:2px}
+  .m-row .who{flex-shrink:0}
+  .m-row .txt{flex:1;color:var(--ink);line-height:1.6}
+  .m-row .go{opacity:0;color:var(--brand);flex-shrink:0;transition:.12s}
+  .m-row:hover .go{opacity:1}
+  /* ===== Mock: summary ===== */
+  .m-sum{padding:20px 40px 36px}
+  .m-sum h5{font-size:16px;font-weight:700;margin:22px 0 10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .m-sum h5:first-child{margin-top:4px}
+  .m-sum ul{padding-left:20px;font-size:13.5px;color:var(--ink-2)}
+  .m-sum ul li{margin-bottom:6px}
+  .m-cols{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:10px}
+  @media(max-width:900px){.m-cols{grid-template-columns:1fr}}
+  .m-col{border-radius:var(--r-lg);padding:14px 16px;border:1px solid var(--line);background:var(--surface)}
+  .m-col.c1{border-top:3px solid #7C3AED;background:linear-gradient(180deg,#FAF7FF,#fff)}
+  .m-col.c2{border-top:3px solid #D97706;background:linear-gradient(180deg,#FFFBF3,#fff)}
+  .m-col.c3{border-top:3px solid #0284C7;background:linear-gradient(180deg,#F3FAFE,#fff)}
+  .m-col .no{font-family:var(--mono);font-size:11px;font-weight:700;padding:1px 7px;border-radius:6px;color:#fff;display:inline-block}
+  .m-col.c1 .no{background:#7C3AED}.m-col.c2 .no{background:#D97706}.m-col.c3 .no{background:#0284C7}
+  .m-col h6{font-size:13.5px;font-weight:600;margin:8px 0 6px}
+  .m-col ul{padding-left:16px;font-size:12.5px;color:var(--ink-2)}
+  .m-col ul li{margin-bottom:5px}
+  /* ===== Mock: recordings ===== */
+  .m-recs{margin:16px 32px 32px;border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+  .m-rec{display:flex;align-items:center;gap:14px;padding:13px 18px;border-bottom:1px solid var(--line);background:var(--surface);font-size:13px}
+  .m-rec:last-child{border-bottom:none}
+  .m-rec .idx{font-family:var(--mono);font-size:11px;color:var(--ink-3);width:26px}
+  .m-rec .fn{font-weight:500}
+  .m-rec .dur{font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
+  .m-rec .st{margin-left:auto;display:flex;align-items:center;gap:10px}
+  /* ===== Logo ===== */
+  .logo-stage{display:flex;gap:var(--sp-5);flex-wrap:wrap;align-items:stretch}
+  .logo-box{flex:1;min-width:240px;border-radius:var(--r-lg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:var(--sp-6);border:1px solid var(--line)}
+  .logo-box.light{background:var(--surface)}
+  .logo-box.paper{background:var(--paper)}
+  .logo-box.dark{background:#23232E;border-color:#23232E}
+  .logo-box .cap{font-size:12px;color:var(--ink-3)}
+  .logo-box.dark .cap{color:#9B9BA6}
+  .checklist{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:var(--sp-4)}
+  @media(max-width:760px){.checklist{grid-template-columns:1fr}}
+  .check{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 16px;font-size:13px;display:flex;gap:10px;align-items:flex-start}
+  .check b{display:block;font-size:13.5px;margin-bottom:2px}
+  .check span{color:var(--ink-2);font-size:12.5px}
+  .check .ico{color:var(--success);font-weight:700}
+  footer{border-top:1px solid var(--line);margin-top:var(--sp-7);padding:24px 0 40px;font-size:12px;color:var(--ink-3)}
+</style>
+</head>
+<body>
+<div class="doc">
+
+  <!-- ======================= DOC HEADER ======================= -->
+  <div class="doc-top">
+    <svg width="30" height="30" viewBox="0 0 96 96"><defs><linearGradient id="dg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4F46E5"/><stop offset="1" stop-color="#8B5CF6"/></linearGradient></defs><rect width="96" height="96" rx="24" fill="url(#dg)"/><g stroke="#fff" stroke-width="5.5" stroke-linecap="round" fill="none"><line x1="22" y1="41" x2="22" y2="55"/><line x1="32" y1="34" x2="32" y2="62"/><line x1="42" y1="27" x2="42" y2="69"/><line x1="52" y1="38" x2="52" y2="58" opacity=".9"/><line x1="62" y1="36" x2="78" y2="36"/><line x1="62" y1="48" x2="73" y2="48" opacity=".9"/><line x1="62" y1="60" x2="79" y2="60"/></g></svg>
+    <div class="name">CcAsr <span>UI 2.0</span> 设计评审与优化方案</div>
+    <div class="tag">功能不变 · 仅视觉与体验升级 · v1.0</div>
+  </div>
+  <nav class="toc">
+    <a href="#s1">01 设计评审</a>
+    <a href="#s2">02 设计方向</a>
+    <a href="#s3">03 色彩与字体规范</a>
+    <a href="#s4">04 组件样式</a>
+    <a href="#s5">05 页面重设计稿</a>
+    <a href="#s6">06 Logo 设计</a>
+    <a href="#s7">07 落地清单</a>
+  </nav>
+
+  <!-- ======================= 01 REVIEW ======================= -->
+  <section id="s1">
+    <div class="sec-kicker">DESIGN REVIEW</div>
+    <h2>01 · 现状评审：六个维度的诊断</h2>
+    <p class="sec-lead">基于对 <code>app/src</code> 全部 5 个页面组件、全局样式与 14 张现状截图的走查。总体判断：功能与信息架构成熟，视觉层处于「能用但不成体系」的阶段 —— 深色顶栏 + 浅色正文两套语言并存、颜色大量硬编码、品牌标识双轨并行。</p>
+    <table class="review">
+      <tr><th style="width:90px">维度</th><th style="width:48%">现状问题</th><th>改进建议（2.0 方案）</th></tr>
+      <tr>
+        <td class="dim">配色</td>
+        <td>
+          <span class="pill bad">高</span>双主题割裂：CSS 变量定义了一套暗色主题（#1a1a2e / #16213e / #e94560），但正文区域是白色 —— 顶栏深蓝、正文白、品牌红，三色互相无过渡。<br>
+          <span class="pill bad">高</span>状态色不统一：完成=#2a9d8f（青绿）、处理中=#4361ee（蓝）、失败=#e94560（红）、品牌=#e94560（红）—— 红既是品牌色又是错误色，语义冲突。<br>
+          <span class="pill mid">中</span>组件内硬编码 40+ 处颜色（#eee / #ddd / #f2f2f7 / #c0392b…），与变量体系完全脱节，无法整体换肤。
+        </td>
+        <td>统一为<strong>浅色「纸面」单主题</strong>：暖白底 + 石墨墨 + 靛紫品牌色（错误红与品牌色彻底分离，改用 #D92D20）。全部颜色收敛为 Design Tokens（第 03 节），组件禁止内联色值。</td>
+      </tr>
+      <tr>
+        <td class="dim">布局</td>
+        <td>
+          <span class="pill mid">中</span>页面内容贴边感强：列表页无最大宽度约束，宽屏下内容横向拉扯、行宽失控。<br>
+          <span class="pill mid">中</span>会议详情页信息层级挤：标题、统计、操作按钮、播放器、工具条层层堆叠，缺少分区与留白节奏。<br>
+          <span class="pill mid">中</span>录音队列 Tab 条目过「瘦」，一屏大量空白，失败原因等信息密度低。
+        </td>
+        <td>内容容器统一 <strong>max-width 1120px 居中</strong>；详情页采用「页头 → 分段控件 → 播放器 → 工具条 → 内容」的固定节奏，每区间隔 16–24px；队列行增高至 52px 并补充时长/时间戳列。</td>
+      </tr>
+      <tr>
+        <td class="dim">字体</td>
+        <td>
+          <span class="pill bad">高</span>无字体层级体系：字号出现 20 / 14.5 / 13 / 12.5 / 12 / 11.5 / 10.5 等 10+ 种零碎值。<br>
+          <span class="pill mid">中</span>时间戳等数字未用等宽字体，列对齐依赖侥幸；字重只有 400/500/700 三档混用。<br>
+          <span class="pill mid">中</span>标题无字距与行高规范。
+        </td>
+        <td>收敛为 <strong>6 级字阶</strong>（28/20/16/14/13/12），正文 14px、辅助 12–13px；时间戳/时长统一等宽数字（font-variant-numeric: tabular-nums）；标题 -0.01em 字距。</td>
+      </tr>
+      <tr>
+        <td class="dim">间距</td>
+        <td>
+          <span class="pill mid">中</span>间距不成体系：padding 出现 13px 16px、12px 16px、6px 0 10px 等任意组合，无 4px 基准网格意识。<br>
+          <span class="pill mid">中</span>圆角 6 / 8 / 10 / 12 混用；卡片内部边距不一致。
+        </td>
+        <td>采用 <strong>4px 基准间距标尺</strong>（4/8/12/16/24/32/48/64），圆角收敛为 6/10/14/20 四档，卡片统一 16–20px 内边距。</td>
+      </tr>
+      <tr>
+        <td class="dim">一致性</td>
+        <td>
+          <span class="pill bad">高</span>按钮至少 4 种样式来源（.btn 类 + 组件内联 + 原生 audio 控件 + 链接式），悬停态有的有、有的没有。<br>
+          <span class="pill mid">中</span>说话人标签在不同页面形态不同（蓝底胶囊 / 绿底胶囊 / 纯文字）。<br>
+          <span class="pill mid">中</span>状态徽标颜色与文字组合各页面自造。<br>
+          <span class="pill good">优</span>值得保留：纪要的多色分栏卡片、证据徽章交互、底部确认栏逻辑——这些差异化组件是有信息价值的。
+        </td>
+        <td>沉淀 <strong>统一组件库</strong>（第 04 节）：按钮 3 变体 × 3 尺寸、说话人标签用有序调色板（说话人身份跨页面恒定同色）、状态徽标 5 态全组件复用。</td>
+      </tr>
+      <tr>
+        <td class="dim">品牌</td>
+        <td>
+          <span class="pill bad">高</span>双标识并行：顶栏是纯文字红字 “CcAsr”，favicon 却是蓝紫渐变声波方块 —— 两个品牌互相不认识。<br>
+          <span class="pill mid">中</span>Logo 缺乏辨识度：通用声波渐变方块与大量音频/AI 应用雷同；无品牌图形语言延伸到 UI。
+        </td>
+        <td>重新设计 Logo（第 06 节）：「声波 → 文字行」概念，统一顶栏、favicon、空状态插画、加载动画的品牌语言。</td>
+      </tr>
+    </table>
+    <h3>可优化 / 可移除项（不改变功能的前提下）</h3>
+    <ul class="tight">
+      <li><strong>顶栏精简</strong>：现状深蓝色顶栏只放了一个文字 Logo 和副标题，信息价值低 → 改为浅色细顶栏（Logo + 产品名），把视觉重心还给内容。</li>
+      <li><strong>「已保存」常驻按钮</strong>：转录页右上角的「已保存」是一个不可点的状态展示 → 改为工具条上的文字状态指示（“所有更改已保存” / “待保存 N 处”），需要确认时再出现主按钮，减少常驻按钮噪音。</li>
+      <li><strong>原生 audio 播放器</strong>：浏览器默认控件与整体风格脱节 → 定制迷你播放器（第 05 节有设计稿），保留全部播放能力。</li>
+      <li><strong>录音 Tab 空态</strong>：现状只有一行灰色小字 → 增加引导空状态（图标 + 说明 + 操作入口）。</li>
+    </ul>
+  </section>
+
+  <!-- ======================= 02 DIRECTION ======================= -->
+  <section id="s2">
+    <div class="sec-kicker">DESIGN DIRECTION</div>
+    <h2>02 · 设计方向：「纸面工作台」</h2>
+    <p class="sec-lead">CcAsr 的本质是<strong>把声音变成一份可靠的文档</strong>。新设计语言呼应这个本质：像一张干净的纸，让转录文本与纪要成为绝对主角；品牌靛紫只出现在「需要行动」的地方——按钮、当前态、证据、说话人。</p>
+    <div class="checklist">
+      <div class="check"><span class="ico">✓</span><div><b>纸感留白</b><span>暖白纸面背景（#FAFAF7），内容卡片纯白浮起，用留白而非分割线划分区域。</span></div></div>
+      <div class="check"><span class="ico">✓</span><div><b>克制的色彩</b><span>全页面 90% 为黑白灰 + 品牌靛紫；语义色只用于状态，说话人色只用于身份识别。</span></div></div>
+      <div class="check"><span class="ico">✓</span><div><b>清晰的字体层级</b><span>六级字阶 + 等宽数字，转录时间轴列严格对齐。</span></div></div>
+      <div class="check"><span class="ico">✓</span><div><b>一致的组件语言</b><span>所有交互组件共享同一套圆角、阴影、动效曲线（150ms ease）。</span></div></div>
+    </div>
+  </section>
+
+  <!-- ======================= 03 TOKENS ======================= -->
+  <section id="s3">
+    <div class="sec-kicker">DESIGN TOKENS</div>
+    <h2>03 · 色彩、字体与基础规范</h2>
+    <h3>品牌与语义色</h3>
+    <div class="swatch-grid">
+      <div class="swatch"><div class="c" style="background:#4F46E5"></div><div class="t"><b>品牌主色</b><span>#4F46E5</span></div></div>
+      <div class="swatch"><div class="c" style="background:linear-gradient(135deg,#4F46E5,#8B5CF6)"></div><div class="t"><b>品牌渐变</b><span>135° 靛→紫</span></div></div>
+      <div class="swatch"><div class="c" style="background:#EEF0FE"></div><div class="t"><b>品牌浅底</b><span>#EEF0FE</span></div></div>
+      <div class="swatch"><div class="c" style="background:#1B1B24"></div><div class="t"><b>正文墨色</b><span>#1B1B24</span></div></div>
+      <div class="swatch"><div class="c" style="background:#92929B"></div><div class="t"><b>辅助灰</b><span>#92929B</span></div></div>
+      <div class="swatch"><div class="c" style="background:#FAFAF7;border-bottom:1px solid var(--line)"></div><div class="t"><b>纸面底色</b><span>#FAFAF7</span></div></div>
+      <div class="swatch"><div class="c" style="background:#0E9F6E"></div><div class="t"><b>成功</b><span>#0E9F6E</span></div></div>
+      <div class="swatch"><div class="c" style="background:#B45309"></div><div class="t"><b>警告</b><span>#B45309</span></div></div>
+      <div class="swatch"><div class="c" style="background:#D92D20"></div><div class="t"><b>错误</b><span>#D92D20</span></div></div>
+      <div class="swatch"><div class="c" style="background:#0369A1"></div><div class="t"><b>信息</b><span>#0369A1</span></div></div>
+    </div>
+    <h3>说话人识别调色板（跨页面恒定）</h3>
+    <div class="swatch-grid">
+      <div class="swatch"><div class="c" style="background:#4F46E5"></div><div class="t"><b>SPEAKER_0</b><span>#4F46E5</span></div></div>
+      <div class="swatch"><div class="c" style="background:#0D9488"></div><div class="t"><b>SPEAKER_1</b><span>#0D9488</span></div></div>
+      <div class="swatch"><div class="c" style="background:#D97706"></div><div class="t"><b>SPEAKER_2</b><span>#D97706</span></div></div>
+      <div class="swatch"><div class="c" style="background:#E11D48"></div><div class="t"><b>SPEAKER_3</b><span>#E11D48</span></div></div>
+      <div class="swatch"><div class="c" style="background:#0284C7"></div><div class="t"><b>SPEAKER_4</b><span>#0284C7</span></div></div>
+      <div class="swatch"><div class="c" style="background:#7C3AED"></div><div class="t"><b>SPEAKER_5</b><span>#7C3AED</span></div></div>
+    </div>
+    <h3>字体层级与基础参数</h3>
+    <div class="tok-cols">
+      <div class="card">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <tr style="color:var(--ink-3);font-size:11.5px"><td style="padding:4px 0">层级</td><td>规格</td><td>用途</td></tr>
+          <tr><td style="padding:6px 0;font-size:26px;font-weight:700;letter-spacing:-.01em">页面标题</td><td class="mono" style="font-family:var(--mono)">26/700</td><td>列表页标题</td></tr>
+          <tr><td style="font-size:20px;font-weight:700">标题</td><td style="font-family:var(--mono)">20/700</td><td>会议名、章节</td></tr>
+          <tr><td style="font-size:16px;font-weight:600">小节</td><td style="font-family:var(--mono)">16/600</td><td>纪要章节</td></tr>
+          <tr><td style="font-size:14px">正文</td><td style="font-family:var(--mono)">14/400</td><td>转录文本</td></tr>
+          <tr><td style="font-size:13px;color:var(--ink-2)">辅助</td><td style="font-family:var(--mono)">13/500</td><td>工具条、标签</td></tr>
+          <tr><td style="font-size:12px;color:var(--ink-3)">说明</td><td style="font-family:var(--mono)">12/400</td><td>元信息、时间戳</td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <ul class="tight" style="margin-bottom:12px">
+          <li><b>间距标尺</b>：4 / 8 / 12 / 16 / 24 / 32 / 48 / 64（4px 基准）</li>
+          <li><b>圆角</b>：6（小元件）/ 10（按钮输入）/ 14（卡片）/ 20（浮层）</li>
+          <li><b>阴影</b>：sm 抬起卡片 / md 悬停 / lg 弹层，一律低饱和暖黑</li>
+          <li><b>动效</b>：150ms ease，悬停上浮 -1px + md 阴影</li>
+          <li><b>内容容器</b>：max-width 1120px 居中，两侧 24–32px 呼吸边距</li>
+          <li><b>无障碍</b>：正文对比度 ≥ 7:1（#1B1B24 on #FAFAF7 = 16.9:1），品牌色仅作大字号/按钮底</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= 04 COMPONENTS ======================= -->
+  <section id="s4">
+    <div class="sec-kicker">COMPONENT LIBRARY</div>
+    <h2>04 · 组件样式说明</h2>
+    <h3>按钮（3 变体 × 尺寸）</h3>
+    <div class="card comp-row">
+      <button class="btn btn-pri">＋ 新建会议</button>
+      <button class="btn btn-sec">导出 ▾</button>
+      <button class="btn btn-ghost">重新生成</button>
+      <button class="btn btn-danger">删除会议</button>
+      <span style="width:1px;height:24px;background:var(--line)"></span>
+      <button class="btn btn-pri btn-sm">确认修改</button>
+      <button class="btn btn-sec btn-sm">批量改判</button>
+      <span class="note" style="margin:0">主按钮唯一；次级描边；幽灵用于低频操作；危险独立色相。悬停统一上浮 -1px。</span>
+    </div>
+    <h3>状态徽标 · 说话人标签 · 证据徽章 · 分段控件</h3>
+    <div class="card comp-row">
+      <span class="badge b-ok"><i></i>已完成</span>
+      <span class="badge b-run"><i></i>转录中</span>
+      <span class="badge b-warn"><i></i>待处理</span>
+      <span class="badge b-err">失败</span>
+      <span class="badge b-mut">草稿</span>
+      <span style="width:1px;height:24px;background:var(--line)"></span>
+      <span class="spk"><i style="background:#4F46E5"></i>张三</span>
+      <span class="spk"><i style="background:#0D9488"></i>李四</span>
+      <span class="spk"><i style="background:#D97706"></i>王五</span>
+      <span style="width:1px;height:24px;background:var(--line)"></span>
+      <span class="evi">▶ 02:03</span>
+      <span class="evi">▶ 04:58</span>
+      <span style="width:1px;height:24px;background:var(--line)"></span>
+      <div class="seg"><button class="on">会议纪要</button><button>合并转录</button><button>录音 2</button></div>
+    </div>
+    <h3>输入与上传</h3>
+    <div class="card comp-row">
+      <div class="inp" style="width:280px">输入会议名称，例如：11月产品评审会</div>
+      <div class="inp" style="width:380px;border-style:dashed;height:44px;justify-content:center;color:var(--brand);border-color:#C9CCF5;background:var(--brand-softer)">⬆ 点击或拖拽音频到此处，可一次选多个</div>
+    </div>
+  </section>
+
+  <!-- ======================= 05 MOCKUPS ======================= -->
+  <section id="s5">
+    <div class="sec-kicker">HI-FI MOCKUPS</div>
+    <h2>05 · 关键页面优化后设计稿</h2>
+    <p class="sec-lead">以下 4 张为纯 HTML/CSS 实现的高保真重设计稿，交互流程与现状完全一致。</p>
+
+    <!-- ---- 5.1 Meeting list ---- -->
+    <h3>5.1 我的会议</h3>
+    <div class="frame">
+      <div class="frame-bar"><i></i><i></i><i></i><div class="url">ccasr.local/meetings</div></div>
+      <div class="mock">
+        <div class="m-header">
+          <svg width="24" height="24" viewBox="0 0 96 96"><defs><linearGradient id="mg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4F46E5"/><stop offset="1" stop-color="#8B5CF6"/></linearGradient></defs><rect width="96" height="96" rx="24" fill="url(#mg1)"/><g stroke="#fff" stroke-width="5.5" stroke-linecap="round" fill="none"><line x1="22" y1="41" x2="22" y2="55"/><line x1="32" y1="34" x2="32" y2="62"/><line x1="42" y1="27" x2="42" y2="69"/><line x1="52" y1="38" x2="52" y2="58" opacity=".9"/><line x1="62" y1="36" x2="78" y2="36"/><line x1="62" y1="48" x2="73" y2="48" opacity=".9"/><line x1="62" y1="60" x2="79" y2="60"/></g></svg>
+          <div><div class="brandname">Cc<em>Asr</em></div></div>
+          <div class="sub">会议录音 → 转录 → 纪要</div>
+        </div>
+        <div class="m-hero"><h4>我的会议</h4><p>一个会议可导入多段录音，按顺序自动转录并合并为同一份纪要</p></div>
+        <div class="m-create">
+          <div class="inp">输入会议名称，例如：11月产品评审会</div>
+          <button class="btn btn-pri">＋ 新建会议</button>
+        </div>
+        <div class="m-grid">
+          <div class="m-card"><span class="x">✕</span>
+            <div class="top"><span class="nm">交接会议（文档+网站）</span><span class="badge b-ok"><i></i>已完成</span></div>
+            <div class="meta"><span>🎙 2 段录音</span><span>◷ 35 分 28 秒</span><span>📄 有纪要</span></div>
+            <div class="date">2026/10/12 13:37</div>
+          </div>
+          <div class="m-card"><span class="x">✕</span>
+            <div class="top"><span class="nm">QA-20261012-multi</span><span class="badge b-ok"><i></i>已完成</span></div>
+            <div class="meta"><span>🎙 2 段录音</span><span>◷ 35 分 28 秒</span><span>📄 有纪要</span></div>
+            <div class="date">2026/10/12 15:15</div>
+          </div>
+          <div class="m-card"><span class="x">✕</span>
+            <div class="top"><span class="nm">QA-20261012-smoke</span><span class="badge b-run"><i></i>转录中</span></div>
+            <div class="meta"><span>🎙 1 段录音</span><span>◷ 30 秒</span><span>📄 生成中…</span></div>
+            <div class="date">2026/10/12 15:09</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="anno"><b>改了什么：</b>深蓝顶栏 → 浅色细顶栏 + 新 Logo；红色新建按钮 → 品牌靛紫主按钮；卡片去掉左侧彩条（噪音源），悬停时上浮并显示删除；状态徽标统一五色体系；卡片间距统一 14px 网格。</div>
+
+    <!-- ---- 5.2 Detail / transcript ---- -->
+    <h3>5.2 会议详情 · 合并转录</h3>
+    <div class="frame">
+      <div class="frame-bar"><i></i><i></i><i></i><div class="url">ccasr.local/meeting/QA-20261012-multi</div></div>
+      <div class="mock">
+        <div class="m-header">
+          <svg width="24" height="24" viewBox="0 0 96 96"><rect width="96" height="96" rx="24" fill="#4F46E5"/><g stroke="#fff" stroke-width="5.5" stroke-linecap="round" fill="none"><line x1="22" y1="41" x2="22" y2="55"/><line x1="32" y1="34" x2="32" y2="62"/><line x1="42" y1="27" x2="42" y2="69"/><line x1="52" y1="38" x2="52" y2="58" opacity=".9"/><line x1="62" y1="36" x2="78" y2="36"/><line x1="62" y1="48" x2="73" y2="48" opacity=".9"/><line x1="62" y1="60" x2="79" y2="60"/></g></svg>
+          <div class="brandname">Cc<em>Asr</em></div>
+        </div>
+        <div class="m-detail-head">
+          <div>
+            <a class="back" href="#">← 我的会议</a>
+            <h4>QA-20261012-multi</h4>
+            <div class="meta">2 段录音 · 35 分 28 秒 · 2 位说话人</div>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:8px"><button class="btn btn-sec btn-sm">导出 ▾</button></div>
+        </div>
+        <div class="m-tabs"><div class="inner">
+          <button class="m-tab">会议纪要</button>
+          <button class="m-tab on">合并转录</button>
+          <button class="m-tab">录音<span class="cnt">2</span></button>
+        </div></div>
+        <div class="m-player">
+          <button class="m-play">▶</button>
+          <div class="m-prog"><i></i><b></b></div>
+          <span class="m-time">12:04 / 35:28</span>
+          <button class="btn btn-ghost btn-sm" style="font-family:var(--mono)">1.0×</button>
+        </div>
+        <div class="m-tool">
+          <span style="font-size:12.5px;color:var(--ink-3)">说话人</span>
+          <span class="spk"><i style="background:#4F46E5"></i>张三</span>
+          <span class="spk"><i style="background:#0D9488"></i>李四</span>
+          <button class="btn btn-sec btn-sm">批量改判</button>
+          <span class="stat">✓ 所有更改已保存</span>
+        </div>
+        <div class="m-rec-div"><b>录音 1</b> 会议A-第1段-文档.wav <span class="rg">全局 00:00 起 · 18:11</span></div>
+        <div class="m-rows">
+          <div class="m-row"><span class="t">00:02</span><span class="who spk"><i style="background:#4F46E5"></i>张三</span><span class="txt">是这样的，零点四的时候这个单臂跟这个双 B 的代码它分开的，你现在打开那口袋看</span><span class="go">▶</span></div>
+          <div class="m-row"><span class="t">00:22</span><span class="who spk"><i style="background:#4F46E5"></i>张三</span><span class="txt">感谢我群直比较稳定嗯</span><span class="go">▶</span></div>
+          <div class="m-row"><span class="t">00:47</span><span class="who spk"><i style="background:#0D9488"></i>李四</span><span class="txt">彩虹 cold up</span><span class="go">▶</span></div>
+          <div class="m-row"><span class="t">01:16</span><span class="who spk"><i style="background:#4F46E5"></i>张三</span><span class="txt">对的</span><span class="go">▶</span></div>
+          <div class="m-row"><span class="t">01:26</span><span class="who spk"><i style="background:#0D9488"></i>李四</span><span class="txt">零点四个零点五是对应官方版本吗，还是你们自己定的版本，就是在官方代码上改了一些东西</span><span class="go">▶</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="anno"><b>改了什么：</b>原生 audio 控件 → 定制迷你播放器（播放/进度/倍速齐全）；Tab 改为下划线式分段控件；说话人改名 chip 与「批量改判」收进一条工具条；「已保存」按钮 → 右侧轻量状态文字；转录行悬停才显示播放按钮，默认状态干净；时间戳等宽对齐。</div>
+
+    <!-- ---- 5.3 Summary ---- -->
+    <h3>5.3 会议纪要（结构化版式 + 证据链）</h3>
+    <div class="frame">
+      <div class="frame-bar"><i></i><i></i><i></i><div class="url">ccasr.local/meeting/QA-20261012-multi/summary</div></div>
+      <div class="mock">
+        <div class="m-header">
+          <svg width="24" height="24" viewBox="0 0 96 96"><rect width="96" height="96" rx="24" fill="#4F46E5"/><g stroke="#fff" stroke-width="5.5" stroke-linecap="round" fill="none"><line x1="22" y1="41" x2="22" y2="55"/><line x1="32" y1="34" x2="32" y2="62"/><line x1="42" y1="27" x2="42" y2="69"/><line x1="52" y1="38" x2="52" y2="58" opacity=".9"/><line x1="62" y1="36" x2="78" y2="36"/><line x1="62" y1="48" x2="73" y2="48" opacity=".9"/><line x1="62" y1="60" x2="79" y2="60"/></g></svg>
+          <div class="brandname">Cc<em>Asr</em></div>
+        </div>
+        <div class="m-detail-head">
+          <div>
+            <a class="back" href="#">← 我的会议</a>
+            <h4>QA-20261012-multi</h4>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:8px"><button class="btn btn-ghost btn-sm">重新生成</button><button class="btn btn-sec btn-sm">导出 ▾</button></div>
+        </div>
+        <div class="m-tabs"><div class="inner">
+          <button class="m-tab on">会议纪要</button>
+          <button class="m-tab">合并转录</button>
+          <button class="m-tab">录音<span class="cnt">2</span></button>
+        </div></div>
+        <div class="m-player">
+          <button class="m-play">▶</button>
+          <div class="m-prog"><i style="width:12%"></i><b style="left:12%"></b></div>
+          <span class="m-time">04:15 / 35:28</span>
+          <button class="btn btn-ghost btn-sm" style="font-family:var(--mono)">1.0×</button>
+        </div>
+        <div class="m-sum">
+          <h5>一、代码仓库分支与版本对应
+            <span class="evi">▶ 02:03</span><span class="evi">▶ 04:58</span><span class="evi">▶ 05:29</span>
+          </h5>
+          <ul>
+            <li><b>0.4 分支</b>：0.4 与 0.4.3 为稳定版本，0.4.3 是大家普遍使用的版本，该分支后续基本不再改动</li>
+            <li><b>0.5 分支</b>：0.5 之后单臂与双 B 代码合并，2101 与 S logo 放在一起，更新完成后分支也基本不动</li>
+            <li><b>0.6 分支</b>：为最新版本，代码已拉取最新仓库，但尚未验证，需要跑较多验证项</li>
+            <li><b>DV 分支</b>：对应 0.3/0.4.3 与 0.6.2，永远保持最新，用于推送新版本</li>
+          </ul>
+          <h5>二、其他仓库与工具说明</h5>
+          <div class="m-cols">
+            <div class="m-col c1"><span class="no">01</span><h6>相机相关</h6><ul><li>gesture 仓库：相机相关代码，较复杂，已支持三个 USB 摄像头同时连接</li><li>摄像头自动烧入工具：工厂使用的自动化流程</li></ul></div>
+            <div class="m-col c2"><span class="no">02</span><h6>历史遗留仓库</h6><ul><li>林销水/销手等仓库：很久未更新，基本已迭代掉，无需维护</li><li>强化学习相关仓库：非当前业务，可忽略</li></ul></div>
+            <div class="m-col c3"><span class="no">03</span><h6>刷系统工具</h6><ul><li>刷系统流程：按飞书文档步骤操作即可，先备份当前系统镜像再烧录</li><li>权限问题：SPEAKER_1 表示没有最新版本权限，需另行确认</li></ul></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="anno"><b>改了什么：</b>证据徽章从章节下方的「证据：」前缀行，上收为标题行内的胶囊组（减少一层视觉噪音，且与标题绑定更紧）；分栏卡片保留三色语义（紫=主题/橙=历史/蓝=工具）但降低底色饱和度，顶部 3px 色条 + 编号胶囊统一系列感；正文行距与列表间距统一。</div>
+
+    <!-- ---- 5.4 Recordings ---- -->
+    <h3>5.4 录音队列</h3>
+    <div class="frame">
+      <div class="frame-bar"><i></i><i></i><i></i><div class="url">ccasr.local/meeting/QA-20261012-multi/recordings</div></div>
+      <div class="mock">
+        <div class="m-header">
+          <svg width="24" height="24" viewBox="0 0 96 96"><rect width="96" height="96" rx="24" fill="#4F46E5"/><g stroke="#fff" stroke-width="5.5" stroke-linecap="round" fill="none"><line x1="22" y1="41" x2="22" y2="55"/><line x1="32" y1="34" x2="32" y2="62"/><line x1="42" y1="27" x2="42" y2="69"/><line x1="52" y1="38" x2="52" y2="58" opacity=".9"/><line x1="62" y1="36" x2="78" y2="36"/><line x1="62" y1="48" x2="73" y2="48" opacity=".9"/><line x1="62" y1="60" x2="79" y2="60"/></g></svg>
+          <div class="brandname">Cc<em>Asr</em></div>
+        </div>
+        <div class="m-detail-head">
+          <div>
+            <a class="back" href="#">← 我的会议</a>
+            <h4>QA-20261012-multi</h4>
+          </div>
+        </div>
+        <div class="m-tabs"><div class="inner">
+          <button class="m-tab">会议纪要</button>
+          <button class="m-tab">合并转录</button>
+          <button class="m-tab on">录音<span class="cnt">2</span></button>
+        </div></div>
+        <div class="m-recs">
+          <div class="m-rec"><span class="idx">#1</span><span class="fn">会议A-第1段-文档.wav</span><span class="dur">18:11</span><span class="st"><span style="font-family:var(--mono);font-size:11px;color:var(--ink-3)">18:11</span><span class="badge b-ok"><i></i>完成</span></span></div>
+          <div class="m-rec"><span class="idx">#2</span><span class="fn">会议A-第2段-网站.wav</span><span class="dur">17:17</span><span class="st"><span class="badge b-run"><i></i>转录中 62%</span></span></div>
+          <div class="m-rec" style="background:#FFFDF8"><span class="idx">#3</span><span class="fn">会议A-第3段-问题.wav</span><span class="dur">—</span><span class="st"><button class="btn btn-sec btn-sm">重试</button><span class="badge b-err">失败 · 音频解码错误</span></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="anno"><b>改了什么：</b>行高 44 → 52px，补充序号、时长、全局起止时间三列；处理中带进度百分比与呼吸指示点；失败行浅红底 + 内联错误原因 + 重试按钮，无需展开即可操作；空队列时展示引导空状态（新 Logo 声波动画 + 「拖拽音频到上方上传区」提示）。</div>
+  </section>
+
+  <!-- ======================= 06 LOGO ======================= -->
+  <section id="s6">
+    <div class="sec-kicker">BRAND IDENTITY</div>
+    <h2>06 · Logo 设计稿</h2>
+    <p class="sec-lead">概念：<strong>「声波，落成文字」</strong>。左侧高低起伏的声波竖条渐次收束、过渡为右侧三行文字横线——一眼说清 CcAsr 做的事（语音 → 文本），也与产品核心的「时间轴 + 文本」界面语言同构。</p>
+    <div class="logo-stage">
+      <div class="logo-box paper">
+        <svg width="120" height="120" viewBox="0 0 96 96"><defs><linearGradient id="lg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4F46E5"/><stop offset="1" stop-color="#8B5CF6"/></linearGradient></defs><rect width="96" height="96" rx="24" fill="url(#lg1)"/><g stroke="#fff" stroke-width="5.5" stroke-linecap="round" fill="none"><line x1="22" y1="41" x2="22" y2="55"/><line x1="32" y1="34" x2="32" y2="62"/><line x1="42" y1="27" x2="42" y2="69"/><line x1="52" y1="38" x2="52" y2="58" opacity=".9"/><line x1="62" y1="36" x2="78" y2="36"/><line x1="62" y1="48" x2="73" y2="48" opacity=".9"/><line x1="62" y1="60" x2="79" y2="60"/></g></svg>
+        <div class="cap">主稿 · 靛紫渐变（应用图标 / favicon）</div>
+      </div>
+      <div class="logo-box light">
+        <svg width="200" height="64" viewBox="0 0 240 64"><rect width="64" height="64" rx="15" fill="#4F46E5"/><g stroke="#fff" stroke-width="3.8" stroke-linecap="round" fill="none"><line x1="14" y1="27" x2="14" y2="37"/><line x1="20.5" y1="22" x2="20.5" y2="42"/><line x1="27" y1="18" x2="27" y2="46"/><line x1="33.5" y1="25" x2="33.5" y2="39" opacity=".9"/><line x1="40" y1="24" x2="51" y2="24"/><line x1="40" y1="32" x2="48" y2="32" opacity=".9"/><line x1="40" y1="40" x2="52" y2="40"/></g><text x="76" y="42" font-family="Inter,Arial" font-size="30" font-weight="700" fill="#1B1B24">Cc<tspan fill="#4F46E5">Asr</tspan></text></svg>
+        <div class="cap">横排组合 · 顶栏 / 文档页眉</div>
+      </div>
+      <div class="logo-box dark">
+        <svg width="120" height="120" viewBox="0 0 96 96"><rect width="96" height="96" rx="24" fill="url(#lg1)"/><g stroke="#fff" stroke-width="5.5" stroke-linecap="round" fill="none"><line x1="22" y1="41" x2="22" y2="55"/><line x1="32" y1="34" x2="32" y2="62"/><line x1="42" y1="27" x2="42" y2="69"/><line x1="52" y1="38" x2="52" y2="58" opacity=".9"/><line x1="62" y1="36" x2="78" y2="36"/><line x1="62" y1="48" x2="73" y2="48" opacity=".9"/><line x1="62" y1="60" x2="79" y2="60"/></g></svg>
+        <div class="cap">深底适配（深色截图 / 分享卡片）</div>
+      </div>
+    </div>
+    <h3>设计说明</h3>
+    <ul class="tight">
+      <li><b>图形</b>：7 根圆头线条，振幅从左至右递减并旋转 90° 成为文字行——「转录」的动作被画进 Logo 里；负形节奏与转录页面的「时间戳 + 文本行」版式一致。</li>
+      <li><b>配色</b>：135° 靛蓝（#4F46E5）→ 紫（#8B5CF6）渐变，与 UI 品牌色同源；单色稿可用纯 #4F46E5，保证 16px 以下小尺寸清晰。</li>
+      <li><b>与旧版差异</b>：旧 favicon 是「渐变方块 + 纯声波」，与同类音频产品雷同且未进入界面；新版把声波「变成文字」，辨识度来自概念而非装饰，并统一了顶栏文字标与图标两个分裂的品牌。</li>
+      <li><b>延伸</b>：加载/转录中的动画可直接让 7 根线条按振幅依次起伏（约 1.2s 循环），品牌语言贯穿到每个等待瞬间。</li>
+    </ul>
+  </section>
+
+  <!-- ======================= 07 HANDOFF ======================= -->
+  <section id="s7">
+    <div class="sec-kicker">HANDOFF</div>
+    <h2>07 · 落地清单</h2>
+    <div class="tok-cols">
+      <div class="card">
+        <b style="font-size:14px">实施顺序建议</b>
+        <ul class="tight" style="margin-top:8px">
+          <li><b>P0 主题切换</b>：以第 03 节 Tokens 重写 <code>global.css</code>，删除暗色变量组；正文区改为纸面底色。</li>
+          <li><b>P0 颜色清剿</b>：5 个组件内约 40 处硬编码色值全部替换为变量（可全局搜索 <code>#[0-9a-f]</code> 逐一收敛）。</li>
+          <li><b>P1 组件统一</b>：按钮 / 徽标 / 说话人标签 / 证据徽章抽成共享组件，说话人色走调色板函数。</li>
+          <li><b>P1 顶栏 + Logo 替换</b>：新 logo.svg / favicon.svg 已随本方案提供，直接替换 public/ 下文件。</li>
+          <li><b>P2 播放器定制</b>：封装 AudioBar 组件，保持现有共享 audio 逻辑不变，仅换肤。</li>
+          <li><b>P2 空状态与加载</b>：录音队列空态、纪要生成中的 Logo 声波动画。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <b style="font-size:14px">替换 global.css 变量头（可直接使用）</b>
+<pre class="code" style="margin-top:10px">:root {
+  <span class="cm">/* surface */</span>
+  --paper:#FAFAF7; --surface:#FFFFFF;
+  --surface-2:#F4F4EF; --surface-3:#EDEDE6;
+  <span class="cm">/* ink */</span>
+  --ink:#1B1B24; --ink-2:#55555F; --ink-3:#92929B;
+  --line:#E8E8E0; --line-strong:#D9D9CF;
+  <span class="cm">/* brand */</span>
+  --brand:#4F46E5; --brand-strong:#4038C7;
+  --brand-soft:#EEF0FE; --brand-softer:#F6F7FF;
+  <span class="cm">/* semantic */</span>
+  --success:#0E9F6E; --warning:#B45309;
+  --danger:#D92D20;  --info:#0369A1;
+  <span class="cm">/* shape & motion */</span>
+  --r-sm:6px; --r-md:10px; --r-lg:14px; --r-xl:20px;
+  --shadow-sm:0 1px 2px rgba(27,27,36,.05);
+  --shadow-md:0 2px 6px rgba(27,27,36,.06),
+              0 8px 24px rgba(27,27,36,.06);
+  --transition:150ms ease;
+}</pre>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    CcAsr UI 2.0 设计评审与优化方案 · 功能与交互流程保持不变 · 交付物：本方案 + logo.svg + favicon.svg（位于 docs/design/）<br>
+    配色对比度均满足 WCAG AA：正文 #1B1B24 / #FAFAF7 = 16.9:1，辅助文字 #55555F = 7.2:1。
+  </footer>
+</div>
+</body>
+</html>

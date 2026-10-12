@@ -41,16 +41,90 @@ export function formatDuration(seconds: number): string {
   return `${s} 秒`;
 }
 
-/** 依据说话人 ID 稳定地取一个主题色（参考元宝的独立主题色卡片）*/
-const PALETTE = [
-  '#4361ee', '#2a9d8f', '#e76f51', '#7209b7',
-  '#f4a261', '#118ab2', '#ef476f', '#06d6a0',
+/**
+ * 说话人识别调色板 —— 6 色恒定（UI 2.0 规范）。
+ *
+ * 同一个说话人在**转录、纪要、批量改判、录音队列**里始终同色：
+ * 颜色只承担「身份识别」，不再兼作状态色（状态色见 global.css 的语义令牌）。
+ */
+export const SPEAKER_PALETTE = [
+  '#4F46E5', // 靛
+  '#0D9488', // 青
+  '#D97706', // 琥珀
+  '#E11D48', // 玫红
+  '#0284C7', // 天蓝
+  '#7C3AED', // 紫
 ];
 
+/** 出现人数超过调色板长度时循环取色，保证「同人同色」永不失效 */
+export function speakerColorAt(index: number): string {
+  return SPEAKER_PALETTE[index % SPEAKER_PALETTE.length];
+}
+
+/**
+ * 由 ID 推导颜色（无需上下文时的兜底）。
+ *
+ * 优先解析 `SPEAKER_3` 这类后端 ID 里的序号，让同一场会议里
+ * SPEAKER_0/1/2 天然拿到相邻且不同的颜色；非标准 ID（用户改判成
+ * 自定义名）再走稳定哈希。哈希与序号可能撞色，所以需要**绝对互异**的
+ * 场景请用 `buildSpeakerColorMap` 显式指定序号。
+ */
 export function speakerColor(speaker: string): string {
+  if (!speaker) return SPEAKER_PALETTE[0];
+  const m = /(\d+)\s*$/.exec(speaker);
+  if (m) return speakerColorAt(Number(m[1]));
   let hash = 0;
   for (let i = 0; i < speaker.length; i++) {
     hash = (hash * 31 + speaker.charCodeAt(i)) >>> 0;
   }
-  return PALETTE[hash % PALETTE.length];
+  return speakerColorAt(hash);
+}
+
+/** 说话人 → 颜色（由页面层构建一次，向下传递给所有子视图） */
+export type SpeakerColorMap = Record<string, string>;
+
+/**
+ * 按「出现顺序」给一场会议里的所有说话人分配互不重复的颜色。
+ *
+ * 用序号分配而不是逐个哈希，是为了保证同一页里 N 个说话人两两不同色 ——
+ * 哈希在 6 色盘上约 40% 概率撞色，会让纪要分栏与说话人标签失去区分度。
+ */
+export function buildSpeakerColorMap(speakers: string[]): SpeakerColorMap {
+  const map: SpeakerColorMap = {};
+  let next = 0;
+  for (const spk of speakers) {
+    if (!spk || map[spk]) continue;
+    map[spk] = speakerColorAt(next);
+    next += 1;
+  }
+  return map;
+}
+
+/** 取色：优先用页面层分配的序号色，缺失才回退到 ID 推导 */
+export function pickSpeakerColor(
+  speaker: string, map?: SpeakerColorMap,
+): string {
+  return (map && map[speaker]) || speakerColor(speaker);
+}
+
+/**
+ * 后端 TaskState（pending / processing / completed / failed）
+ * → 统一徽标文案与语义。
+ * 徽标样式类由 global.css 的 .b-ok / .b-run / .b-warn / .b-err / .b-mut 提供。
+ */
+export type TaskTone = 'ok' | 'run' | 'warn' | 'err' | 'mut';
+
+export function taskTone(state: string): TaskTone {
+  switch (state) {
+    case 'completed': return 'ok';
+    case 'failed': return 'err';
+    case 'processing': return 'run';
+    default: return 'mut';
+  }
+}
+
+export function taskLabel(state: string): string {
+  return ({
+    pending: '排队中', processing: '转录中', completed: '完成', failed: '失败',
+  } as Record<string, string>)[state] || state;
 }

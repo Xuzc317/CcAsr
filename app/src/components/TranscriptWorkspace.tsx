@@ -1,12 +1,14 @@
 import { useMemo, useRef, useState, useCallback } from 'react';
-import { Virtuoso } from 'react-virtuoso';
+import { GroupedVirtuoso } from 'react-virtuoso';
 import type { VirtuosoHandle } from 'react-virtuoso';
 import * as api from '../services/api';
-import { formatTime, speakerColor } from '../utils/format';
+import { formatTime, pickSpeakerColor } from '../utils/format';
+import type { SpeakerColorMap } from '../utils/format';
 import type { MergedSegment, MergedTranscript } from '../types';
 import type { EditAction, EditState } from '../utils/editState';
 import { computeChanges, speakerOrder, totalChanges } from '../utils/editState';
 import BatchReassignDialog from './BatchReassignDialog';
+import { SpeakerTag } from './ui';
 
 interface Props {
   projectId: string;
@@ -22,6 +24,23 @@ interface Props {
   onPlay?: (recordingId: string, localStart: number, segId?: string) => void;
   /** 有未保存修改时点导出，父级弹出「保存并导出」 */
   onExportWithDraft?: (fmt: 'txt' | 'json') => void;
+  /** 说话人 → 颜色（页面层分配的序号色，保证跨视图同人同色） */
+  speakerColors?: SpeakerColorMap;
+}
+
+/**
+ * GroupedVirtuoso 的列表容器替身。
+ *
+ * 每组（每段录音）的行都落在这一个盒子里，于是组内的行可以拼成一张连续
+ * 列表：外框只画一圈，行与行之间只有一条分割线。用默认包装元素的话，
+ * 每行是独立盒子、各画一圈边框，视觉上就成了「一张张带缝隙的小卡片」。
+ */
+function SegRowsList({
+  children, style, ...rest
+}: React.ComponentProps<'div'> & { context?: unknown }) {
+  return (
+    <div {...rest} style={style} className="seg-rows">{children}</div>
+  );
 }
 
 /**
@@ -41,7 +60,7 @@ interface Props {
  */
 export default function TranscriptWorkspace({
   projectId, transcript, edit, dispatch, onSaved,
-  activeSegId, onPlay, onExportWithDraft,
+  activeSegId, onPlay, onExportWithDraft, speakerColors,
 }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -79,6 +98,26 @@ export default function TranscriptWorkspace({
     const m = new Map<string, number>();
     edit.segments.forEach((s) => m.set(s.speaker, (m.get(s.speaker) || 0) + 1));
     return m;
+  }, [edit.segments]);
+
+  /**
+   * 按录音分组渲染。
+   *
+   * 用 GroupedVirtuoso 而不是「在行里塞分组头」，是为了让**同段录音的行
+   * 落在同一个 DOM 容器里** —— 这样它们能拼成一张连续的列表（共用边框、
+   * 只在首尾圆角），而不是一行一张带缝隙的小卡片。
+   * 录音头只在不可见的度量阶段渲染，分组计数中记 0。
+   */
+  const { groupCounts } = useMemo(() => {
+    const counts = new Map<number, number>();
+    edit.segments.forEach((s) => {
+      counts.set(s.recording_index, (counts.get(s.recording_index) || 0) + 1);
+    });
+    return {
+      groupCounts: [...counts.keys()]
+        .sort((a, b) => a - b)
+        .map((k) => counts.get(k) as number),
+    };
   }, [edit.segments]);
 
   // ── 播放：交给父级统一持有的播放器 ───────────────────────────
@@ -135,21 +174,26 @@ export default function TranscriptWorkspace({
   }, [projectId, dirty, onExportWithDraft]);
 
   return (
-    <div style={S.wrap}>
-      {/* ── 顶部工具条 ── */}
-      <div style={S.toolbar}>
-        <div style={S.toolLeft}>
-          <span style={S.stat}>{edit.segments.length} 段</span>
-          <span style={S.stat}>·</span>
-          <span style={S.stat}>{speakers.length} 位说话人</span>
-          <span style={S.stat}>·</span>
-          <span style={S.stat}>{formatTime(transcript.duration)}</span>
-          <span style={S.recStat}>{transcript.recordings.length} 段录音</span>
-        </div>
-        <div style={S.toolRight}>
+    <div className="ws">
+      {/* ── 工具条：统计 · 说话人 · 批量改判 · 导出 · 保存状态 ── */}
+      <div className="ws-tools">
+        <span className="stat">{edit.segments.length} 段</span>
+        <span className="stat stat-sep">·</span>
+        <span className="stat">{speakers.length} 位说话人</span>
+        <span className="stat stat-sep">·</span>
+        <span className="stat">{formatTime(transcript.duration)}</span>
+        <span className="stat stat-sep">·</span>
+        <span className="stat">{transcript.recordings.length} 段录音</span>
+
+        <div className="tools-right">
+          {/* 「已保存」常驻按钮改为轻量状态文字；需要确认时才出现主按钮 */}
+          <span className="save-status" aria-live="polite">
+            {dirty
+              ? <span className="dirty">● 待保存 {total} 处</span>
+              : <span className="ok">✓ {saveMsg || '所有更改已保存'}</span>}
+          </span>
           <button
-            className="btn btn-secondary"
-            style={S.smallBtn}
+            className="btn btn-secondary btn-sm"
             onClick={() => setShowBatch(true)}
             disabled={speakers.length < 2}
             title={speakers.length < 2
@@ -159,183 +203,186 @@ export default function TranscriptWorkspace({
             ⇄ 批量改判
           </button>
           <button
-            className="btn btn-secondary"
-            style={S.smallBtn}
+            className="btn btn-secondary btn-sm"
             onClick={() => setShowSpeakerBar((v) => !v)}
           >
             {showSpeakerBar ? '收起说话人' : `说话人 (${speakers.length})`}
           </button>
-          <button className="btn btn-secondary" style={S.smallBtn}
+          <button className="btn btn-secondary btn-sm"
                   onClick={() => handleExport('txt')}>
             ⬇ TXT
           </button>
-          <button className="btn btn-secondary" style={S.smallBtn}
+          <button className="btn btn-secondary btn-sm"
                   onClick={() => handleExport('json')}>
             ⬇ JSON
           </button>
         </div>
       </div>
 
-      {/* ── 说话人改名 ── */}
+      {/* ── 说话人改名：一条工具条，不再单独占一层 ── */}
       {showSpeakerBar && (
-        <div style={S.speakerBar}>
-          <div style={S.speakerBarHead}>
-            <span style={S.speakerLabel}>说话人显示名</span>
-            <span style={S.hint}>
-              改完点最下方「确认修改」生效 · 导出与纪要都会用这个名字
-            </span>
-          </div>
-          <div style={S.speakerChips}>
+        <div className="speaker-bar">
+          <span className="label">说话人</span>
+          <div className="speaker-chips">
             {speakers.map((spk) => {
               const count = speakerCounts.get(spk) || 0;
               return (
-                <div key={spk} style={S.speakerChip}>
-                  <span style={{ ...S.dot, background: speakerColor(spk) }} />
-                  <span style={S.spkId} title={spk}>{spk}</span>
-                  <span style={S.arrow}>→</span>
+                <div key={spk} className="speaker-chip">
+                  <i
+                    style={{
+                      width: 8, height: 8, borderRadius: 3, display: 'inline-block',
+                      background: pickSpeakerColor(spk, speakerColors),
+                    }}
+                  />
+                  <span className="sid" title={spk}>{spk}</span>
+                  <span className="arrow">→</span>
                   <input
-                    style={S.spkInput}
+                    className="name-input"
                     value={edit.names[spk] ?? ''}
                     placeholder="改名…"
+                    aria-label={`${spk} 的显示名`}
                     onChange={(e) => dispatch({
                       type: 'rename', speaker: spk, name: e.target.value,
                     })}
                   />
-                  <span style={S.spkCount}>{count}</span>
+                  <span className="count" title={`${count} 段发言`}>{count}</span>
                 </div>
               );
             })}
           </div>
+          <span className="hint">改完点右下「确认修改」生效 · 导出与纪要都会用这个名字</span>
         </div>
       )}
 
       {/* 音频播放器由父级 MeetingDetailPage 统一渲染（与纪要证据跳转共用） */}
 
-      {/* ── 片段列表 ── */}
-      <div style={S.listWrap}>
-        <Virtuoso
+      {/* ── 片段列表（虚拟滚动，按录音分组） ── */}
+      <div className="seg-list">
+        <GroupedVirtuoso
           ref={virtuosoRef}
           style={{ height: '100%' }}
-          data={edit.segments}
-          itemContent={(_i, seg) => {
+          groupCounts={groupCounts}
+          groupContent={(groupIndex) => {
+            const meta = transcript.recordings[groupIndex];
+            return (
+              <div className="seg-rec-head">
+                <span className="tag">录音 {groupIndex + 1}</span>
+                <span>{meta?.filename}</span>
+                <span className="range">
+                  全局 {formatTime(meta?.offset ?? 0)} 起 · {formatTime(meta?.duration ?? 0)}
+                </span>
+              </div>
+            );
+          }}
+          components={{
+            // 每段录音的行装进同一个盒子，才能拼成一张连续列表
+            // （虚拟列表默认给每行一个独立包装元素，逐行加边框会变成「卡片 + 缝隙」）
+            List: SegRowsList,
+          }}
+          itemContent={(index) => {
+            // GroupedVirtuoso 的 itemContent 只给扁平下标（Data 泛型要配合 data 属性，
+            // 而这里的数据源是 groupCounts），因此按下标取回片段，类型在此显式收窄
+            const seg = edit.segments[index] as MergedSegment | undefined;
+            if (!seg) return null;
             const isActive = seg.id === (activeSegId ?? null);
             const editing = editingId === seg.id;
             const reassigning = reassignId === seg.id;
-            const recMeta = transcript.recordings[seg.recording_index];
-            const showRecHeader = _i === 0
-              || edit.segments[_i - 1].recording_index !== seg.recording_index;
             return (
-              <>
-                {showRecHeader && recMeta && (
-                  <div style={S.recHeader}>
-                    <span style={S.recBadge}>录音 {seg.recording_index + 1}</span>
-                    {recMeta.filename}
-                    <span style={S.recHeaderTime}>
-                      全局 {formatTime(recMeta.offset)} 起 · {formatTime(recMeta.duration)}
-                    </span>
-                  </div>
-                )}
-                <div style={{ ...S.seg, ...(isActive ? S.segActive : {}) }}>
-                  <span style={S.time}>{formatTime(seg.start)}</span>
+              <div className={`seg${isActive ? ' active' : ''}`}>
+                <span className="seg-time">{formatTime(seg.start)}</span>
 
-                  {/* 说话人标签：点击可改判这一句的归属 */}
-                  <button
-                    style={{
-                      ...S.spkTag,
-                      background: speakerColor(seg.speaker),
-                      cursor: 'pointer',
-                      border: 'none',
-                    }}
-                    title={`${displayName(seg.speaker)}（${seg.speaker}）\n点击改判这一句是谁说的`}
-                    onClick={() => setReassignId(reassigning ? null : seg.id)}
-                  >
-                    {displayName(seg.speaker)}
-                  </button>
+                {/* 说话人标签：点击可改判这一句的归属 */}
+                <SpeakerTag
+                  speaker={seg.speaker}
+                  name={displayName(seg.speaker)}
+                  colorMap={speakerColors}
+                  onClick={() => setReassignId(reassigning ? null : seg.id)}
+                  title={`${displayName(seg.speaker)}（${seg.speaker}）\n点击改判这一句是谁说的`}
+                />
 
-                  {reassigning && (
-                    <span style={S.reassignBox}>
-                      <span style={S.reassignLabel}>这句其实是：</span>
-                      <select
-                        autoFocus
-                        style={S.select}
-                        value={seg.speaker}
-                        onChange={(e) => {
-                          dispatch({
-                            type: 'reassignOne', id: seg.id, speaker: e.target.value,
-                          });
-                          setReassignId(null);
-                        }}
-                        onBlur={() => setReassignId(null)}
-                      >
-                        {speakers.map((spk) => (
-                          <option key={spk} value={spk}>
-                            {displayName(spk)}（{spk}）
-                          </option>
-                        ))}
-                      </select>
-                      <button style={S.miniBtn}
-                              onClick={() => setReassignId(null)}>
-                        取消
-                      </button>
-                    </span>
-                  )}
-
-                  {editing ? (
-                    <textarea
+                {reassigning && (
+                  <span className="seg-reassign">
+                    <span className="label">这句其实是：</span>
+                    <select
                       autoFocus
-                      style={S.textarea}
-                      value={seg.text}
-                      onChange={(e) => dispatch({
-                        type: 'text', id: seg.id, text: e.target.value,
-                      })}
-                      onBlur={() => setEditingId(null)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Escape') setEditingId(null);
+                      value={seg.speaker}
+                      aria-label="改判说话人"
+                      onChange={(e) => {
+                        dispatch({
+                          type: 'reassignOne', id: seg.id, speaker: e.target.value,
+                        });
+                        setReassignId(null);
                       }}
-                    />
-                  ) : (
-                    <span
-                      style={{ ...S.text, ...(seg.text !== baseTextById.get(seg.id)
-                        ? S.textEdited : {}) }}
-                      onClick={() => playSegment(seg)}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        setEditingId(seg.id);
-                      }}
-                      title="单击播放 · 双击编辑文字"
+                      onBlur={() => setReassignId(null)}
                     >
-                      {seg.text}
-                    </span>
-                  )}
+                      {speakers.map((spk) => (
+                        <option key={spk} value={spk}>
+                          {displayName(spk)}（{spk}）
+                        </option>
+                      ))}
+                    </select>
+                    <button className="link-btn"
+                            onClick={() => setReassignId(null)}>
+                      取消
+                    </button>
+                  </span>
+                )}
+
+                {editing ? (
+                  <textarea
+                    autoFocus
+                    className="txt-edit"
+                    value={seg.text}
+                    onChange={(e) => dispatch({
+                      type: 'text', id: seg.id, text: e.target.value,
+                    })}
+                    onBlur={() => setEditingId(null)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') setEditingId(null);
+                    }}
+                  />
+                ) : (
+                  <span
+                    className={`txt${seg.text !== baseTextById.get(seg.id) ? ' edited' : ''}`}
+                    onClick={() => playSegment(seg)}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setEditingId(seg.id);
+                    }}
+                    title="单击播放 · 双击编辑文字"
+                  >
+                    {seg.text}
+                  </span>
+                )}
 
                   <button
-                    style={S.playBtn}
+                    className="go"
                     title="从此处播放"
+                    aria-label="从此处播放"
                     onClick={(e) => { e.stopPropagation(); playSegment(seg); }}
                   >
                     ▶
                   </button>
-                </div>
-              </>
+              </div>
             );
           }}
         />
       </div>
 
       {/* ── 底部确认栏 ── */}
-      <div style={{ ...S.bottomBar, ...(dirty ? S.bottomBarDirty : {}) }}>
-        <div style={S.changeSummary}>
+      <div className={`ws-foot${dirty ? ' dirty' : ''}`}>
+        <div className="changes">
           {dirty ? (
             <>
-              <span style={S.changeBadge}>待保存 {total} 处</span>
-              <span style={S.changeDetail}>
+              <span className="count">待保存 {total} 处</span>
+              <span className="detail">
                 {changes.text > 0 && <>文字 {changes.text} 段 </>}
                 {changes.speaker > 0 && <>归属 {changes.speaker} 段 </>}
                 {changes.renamed > 0 && <>说话人名 {changes.renamed} 个</>}
               </span>
               {edit.lastBatch && (
                 <button
-                  style={S.undoBatchBtn}
+                  className="btn btn-ghost btn-xs"
                   onClick={() => dispatch({ type: 'undoBatch' })}
                   title={`撤销「${displayName(edit.lastBatch.to)}」的批量改判`}
                 >
@@ -344,22 +391,21 @@ export default function TranscriptWorkspace({
               )}
             </>
           ) : (
-            <span style={S.noChange}>{saveMsg || '暂无未保存的修改'}</span>
+            <span className="save-status">{saveMsg || '暂无未保存的修改'}</span>
           )}
-          {error && <span style={S.errorText}>{error}</span>}
+          {error && <span style={{ fontSize: 12.5, color: 'var(--danger)' }}>{error}</span>}
         </div>
-        <div style={S.bottomActions}>
+        <div className="actions">
           <button
-            className="btn btn-secondary"
-            style={S.smallBtn}
+            className="btn btn-secondary btn-sm"
             onClick={() => dispatch({ type: 'undoAll' })}
             disabled={!dirty || saving}
           >
             撤销全部修改
           </button>
           <button
-            className="btn btn-primary"
-            style={{ ...S.smallBtn, minWidth: 116 }}
+            className="btn btn-primary btn-sm"
+            style={{ minWidth: 124 }}
             onClick={handleSave}
             disabled={!dirty || saving}
           >
@@ -373,6 +419,7 @@ export default function TranscriptWorkspace({
           segments={edit.segments}
           displayName={displayName}
           speakers={speakers}
+          speakerColors={speakerColors}
           onApply={(from, to) => dispatch({ type: 'reassignAll', from, to })}
           onClose={() => setShowBatch(false)}
         />
@@ -380,124 +427,3 @@ export default function TranscriptWorkspace({
     </div>
   );
 }
-
-const S: Record<string, React.CSSProperties> = {
-  wrap: { display: 'flex', flexDirection: 'column', height: '100%', background: '#fff' },
-  toolbar: {
-    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    padding: '10px 18px', borderBottom: '1px solid #eee', flexShrink: 0, gap: 12,
-  },
-  toolLeft: { display: 'flex', gap: 10, alignItems: 'center' },
-  toolRight: { display: 'flex', gap: 8, alignItems: 'center' },
-  stat: { fontSize: 13, color: '#555', fontWeight: 600 },
-  recStat: { fontSize: 12, color: '#999', marginLeft: 4 },
-  smallBtn: { padding: '5px 12px', fontSize: 12.5, borderRadius: 8 },
-
-  speakerBar: {
-    padding: '10px 18px', background: '#fafbfc',
-    borderBottom: '1px solid #eee', flexShrink: 0,
-  },
-  speakerBarHead: {
-    display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 8,
-  },
-  speakerLabel: { fontSize: 12.5, fontWeight: 700, color: '#444' },
-  hint: { fontSize: 11.5, color: '#999' },
-  speakerChips: { display: 'flex', flexWrap: 'wrap', gap: 10 },
-  speakerChip: {
-    display: 'flex', alignItems: 'center', gap: 6,
-    background: '#fff', border: '1px solid #e6e6ee',
-    borderRadius: 8, padding: '5px 10px',
-  },
-  dot: { width: 10, height: 10, borderRadius: '50%', flexShrink: 0 },
-  spkId: {
-    fontSize: 11.5, color: '#888', fontFamily: 'ui-monospace, monospace',
-    minWidth: 68,
-  },
-  arrow: { color: '#bbb', fontSize: 12 },
-  spkInput: {
-    width: 110, border: '1px solid #ddd', borderRadius: 8,
-    padding: '3px 7px', fontSize: 13, outline: 'none',
-  },
-  spkCount: {
-    fontSize: 11, color: '#4361ee', background: '#eef0ff',
-    borderRadius: 9, padding: '1px 7px', fontWeight: 600,
-  },
-
-  listWrap: { flex: 1, minHeight: 0 },
-  recHeader: {
-    display: 'flex', alignItems: 'center', gap: 10,
-    padding: '9px 18px', background: '#f2f4ff',
-    borderTop: '1px solid #e0e4ff', borderBottom: '1px solid #e0e4ff',
-    fontSize: 12.5, color: '#444', fontWeight: 600,
-  },
-  recBadge: {
-    background: '#4361ee', color: '#fff', fontSize: 11, fontWeight: 700,
-    padding: '2px 8px', borderRadius: 4,
-  },
-  recHeaderTime: { marginLeft: 'auto', color: '#8890b5', fontWeight: 400 },
-
-  seg: {
-    display: 'flex', alignItems: 'flex-start', gap: 10,
-    padding: '7px 18px', borderBottom: '1px solid #f5f5f8',
-    background: 'transparent',
-  },
-  segActive: { background: '#fffbe6' },
-  time: {
-    fontSize: 11.5, color: '#aaa', minWidth: 52, paddingTop: 3,
-    fontVariantNumeric: 'tabular-nums', flexShrink: 0,
-  },
-  spkTag: {
-    fontSize: 11.5, color: '#fff', fontWeight: 600,
-    padding: '2px 8px', borderRadius: 4, flexShrink: 0,
-    marginTop: 1, maxWidth: 96, overflow: 'hidden',
-    textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-  },
-  reassignBox: {
-    display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
-    background: '#fff', border: '1px solid #4361ee',
-    borderRadius: 8, padding: '2px 6px',
-  },
-  reassignLabel: { fontSize: 11.5, color: '#666' },
-  select: {
-    fontSize: 12.5, border: '1px solid #ddd', borderRadius: 6,
-    padding: '1px 4px', outline: 'none', background: '#fff',
-  },
-  miniBtn: {
-    fontSize: 11, border: 'none', background: 'transparent',
-    color: '#888', cursor: 'pointer', padding: '0 3px',
-  },
-  text: { fontSize: 13.5, lineHeight: 1.75, color: '#333', flex: 1, cursor: 'pointer' },
-  textEdited: { background: '#fff3cd', borderRadius: 3 },
-  textarea: {
-    flex: 1, fontSize: 13.5, lineHeight: 1.7, color: '#333',
-    border: '1px solid #4361ee', borderRadius: 8, padding: '5px 8px',
-    outline: 'none', resize: 'vertical', minHeight: 52, fontFamily: 'inherit',
-  },
-  playBtn: {
-    border: 'none', background: 'transparent', color: '#4361ee',
-    cursor: 'pointer', fontSize: 13, padding: '2px 4px', flexShrink: 0,
-  },
-
-  bottomBar: {
-    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    gap: 12, padding: '10px 18px', flexShrink: 0,
-    borderTop: '1px solid #eee', background: '#fafafa',
-  },
-  bottomBarDirty: {
-    background: '#fff8e6', borderTop: '1px solid #f0d9a0',
-  },
-  changeSummary: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
-  changeBadge: {
-    fontSize: 12.5, fontWeight: 700, color: '#8a6100',
-    background: '#ffe9b0', borderRadius: 10, padding: '2px 10px',
-  },
-  changeDetail: { fontSize: 12, color: '#8a6100' },
-  undoBatchBtn: {
-    fontSize: 11.5, color: '#8a6100', background: '#fff',
-    border: '1px solid #e8cf94', borderRadius: 8,
-    padding: '2px 9px', cursor: 'pointer',
-  },
-  noChange: { fontSize: 12.5, color: '#999' },
-  errorText: { fontSize: 12.5, color: '#d33' },
-  bottomActions: { display: 'flex', gap: 8, flexShrink: 0 },
-};

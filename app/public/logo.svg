@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" role="img" aria-label="CcAsr">
+  <defs>
+    <linearGradient id="ccasr-g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+  <rect width="96" height="96" rx="24" fill="url(#ccasr-g)"/>
+  <!-- 声波（左）渐变为文字行（右）：语音 → 文字 -->
+  <g stroke="#FFFFFF" stroke-width="5.5" stroke-linecap="round" fill="none">
+    <line x1="22" y1="41" x2="22" y2="55"/>
+    <line x1="32" y1="34" x2="32" y2="62"/>
+    <line x1="42" y1="27" x2="42" y2="69"/>
+    <line x1="52" y1="38" x2="52" y2="58" opacity="0.9"/>
+    <line x1="62" y1="36" x2="78" y2="36"/>
+    <line x1="62" y1="48" x2="73" y2="48" opacity="0.9"/>
+    <line x1="62" y1="60" x2="79" y2="60"/>
+  </g>
+</svg>
