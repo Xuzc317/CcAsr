@@ -69,7 +69,21 @@
 
 ### 编辑与导出
 
-双击改文本 · 说话人**改名**（导出同步生效）· 导出 **TXT / JSON / Markdown**
+转录完成后可以改三样东西，改完在**底部确认栏**汇总提交：
+
+| 改什么 | 怎么改 |
+|---|---|
+| **说话人名** | 顶部「说话人显示名」：`SPEAKER_0` → `leader`，`SPEAKER_1` → `我`，全局生效 |
+| **单句归属** | 点句首的说话人标签 → 选「这句其实是：」另一个人 |
+| **文字** | 双击正文校对 |
+
+改过的句子会**高亮**显示，底部实时汇总「待保存 N 处（文字 X 段 / 归属 Y 段 / 说话人名 Z 个）」，
+点「确认修改」才写回；点「撤销全部修改」回到上次保存的状态。导出 **TXT / JSON / Markdown**，
+导出与纪要都用改后的显示名。
+
+![转录后修改](docs/images/08-edit-pending.png)
+
+<sub>改完未保存的状态：说话人已改为 leader、文字已校对，底部显示「待保存 2 处」</sub>
 
 ---
 
@@ -86,6 +100,14 @@
 跨录音的统一时间轴。分隔条标出每段录音，右侧标注全局起止时间；说话人可改名，改名后**导出也用显示名**。
 
 ![合并转录](docs/images/04-transcript.png)
+
+### 转录后修改
+
+三项修改各就各位：顶部改说话人名、点标签改单句归属、双击改文字。改动先留本地，底部确认栏汇总后一次性提交。
+
+![转录后修改](docs/images/07-edit-reassign.png)
+
+<sub>点某句的说话人标签即可展开「这句其实是：」下拉，把这一句改判给别人</sub>
 
 ### 会议纪要
 
@@ -299,6 +321,7 @@ Windows 用户也可直接双击 `start_backend.bat` / `start_frontend.bat`。
 | `POST` | `/api/projects/{id}/start` | 启动/继续队列；`retry_failed=true`（默认）会重试失败项 |
 | `GET` | `/api/projects/{id}/transcript` | 合并转录（统一时间轴） |
 | `PATCH` | `/api/projects/{id}/transcript` | 保存校对与说话人改名 |
+| `POST` | `/api/projects/{id}/transcript/reassign` | **批量改判**：把某人的全部发言改给另一人（`{"from","to"}`） |
 | `GET` | `/api/projects/{id}/summary` | 会议纪要（Markdown + 状态） |
 | `POST` | `/api/projects/{id}/summary/regenerate` | 重新生成纪要 |
 | `POST` | `/api/projects/{id}/reference` | 上传参考材料 |

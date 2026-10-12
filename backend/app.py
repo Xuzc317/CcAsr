@@ -536,10 +536,16 @@ async def get_project_transcript(project_id: str):
 @app.patch("/api/projects/{project_id}/transcript")
 async def update_project_transcript(project_id: str, payload: dict):
     """
-    保存对合并文档的编辑（校对文本、说话人改名）。
+    保存对合并文档的编辑（校对文本、说话人改名、单句归属调整）。
 
     接受 ``{"segments":[{"id":..., "text":..., "speaker":...}], "speaker_map":{...}}``，
     只更新传入的字段，未提及的段落保持原样。
+
+    注意区分两个概念：
+      - ``segments[].speaker``  = **这一句是谁说的**（改归属）
+      - ``speaker_map``         = **显示名**（SPEAKER_0 → 「leader」）
+
+    两者都会反映到导出结果：导出用显示名，归属决定某句挂谁的显示名。
     """
     store = get_project_store()
     proj = _require_project(store, project_id)
@@ -568,9 +574,75 @@ async def update_project_transcript(project_id: str, payload: dict):
     if isinstance(speaker_map, dict):
         transcript["speaker_map"] = speaker_map
 
+    # speaker 字段变了要重算说话人总数，否则前端统计会不准
+    if updated:
+        transcript["num_speakers"] = len(
+            {s.get("speaker") for s in transcript.get("segments", []) if s.get("speaker")})
+
     store.save_transcript(project_id, transcript)
     logger.info("[project %s] 合并文档已更新 %d 处", project_id, updated)
     return JSONResponse(content={"updated": updated, "transcript": transcript})
+
+
+@app.post("/api/projects/{project_id}/transcript/reassign")
+async def reassign_speaker(project_id: str, payload: dict):
+    """
+    把某个说话人的**全部**发言改判给另一个说话人。
+
+    用途：整段认错了人（例如把 leader 的话全归成了 SPEAKER_1），
+    或把一个误建的说话人合并进真正的说话人。
+
+    请求体::
+
+        {"from": "SPEAKER_1", "to": "SPEAKER_0"}
+
+    ``to`` 若是新标签（从未出现过）则相当于重命名整个说话人；
+    若已存在则相当于**合并**两个说话人。原来的 ``speaker_map`` 条目会一并迁移。
+
+    为什么要单独做批量接口：长会议有几百段，让前端逐段 PATCH 既慢又容易
+    在中途失败后留下半改状态。
+    """
+    store = get_project_store()
+    proj = _require_project(store, project_id)
+
+    p = store._project_dir(project_id) / "transcript.json"
+    if not p.exists():
+        raise HTTPException(status_code=400, detail="合并文档尚未生成")
+
+    src = str((payload or {}).get("from") or "").strip()
+    dst = str((payload or {}).get("to") or "").strip()
+    if not src or not dst:
+        raise HTTPException(status_code=400, detail="需要同时提供 from 与 to")
+    if src == dst:
+        return JSONResponse(content={"changed": 0})
+
+    with open(p, "r", encoding="utf-8") as f:
+        transcript = json.load(f)
+
+    changed = 0
+    for seg in transcript.get("segments", []):
+        if seg.get("speaker") == src:
+            seg["speaker"] = dst
+            changed += 1
+
+    if changed == 0:
+        raise HTTPException(status_code=404,
+                            detail=f"没有发言归属于 {src}")
+
+    # 显示名跟着迁移：原 src 的显示名成为 dst 的显示名（若 dst 尚无显示名）
+    smap = transcript.get("speaker_map") or {}
+    if src in smap:
+        smap.setdefault(dst, smap[src])
+        smap.pop(src, None)
+    transcript["speaker_map"] = smap
+    transcript["num_speakers"] = len(
+        {s.get("speaker") for s in transcript.get("segments", []) if s.get("speaker")})
+
+    store.save_transcript(project_id, transcript)
+    logger.info("[project %s] 说话人改判 %s → %s，影响 %d 段",
+                project_id, src, dst, changed)
+    return JSONResponse(content={"changed": changed, "from": src, "to": dst,
+                                 "transcript": transcript})
 
 
 @app.get("/api/projects/{project_id}/summary")

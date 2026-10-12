@@ -98,6 +98,18 @@ appmod.get_backend = lambda device="auto", language="zh": _Pipe()
 ms.set_llm_client_factory(FakeOpenAI)
 client = TestClient(appmod.app)
 
+AUDIO = ("a.wav", b"AUDIO", "audio/wav")
+
+
+def new_project(name="编辑测试"):
+    """建一个会议并跑完转录，返回 project_id"""
+    _pid = client.post("/api/projects", json={"name": name}).json()["project_id"]
+    client.post(f"/api/projects/{_pid}/recordings",
+                files=[("files", AUDIO)],
+                data={"language": "zh", "start": "true"})
+    return _pid
+
+
 # ── 准备一个有转录的会议 ──────────────────────────────────────
 pid = client.post("/api/projects", json={"name": "编辑功能验证"}).json()["project_id"]
 client.post(f"/api/projects/{pid}/recordings",
@@ -177,6 +189,95 @@ check("PATCH 不存在项目 -> 404",
       client.patch("/api/projects/nope/transcript", json={}).status_code == 404)
 check("GET 不存在项目 transcript -> 404",
       client.get("/api/projects/nope/transcript").status_code == 404)
+
+# ══════════════════════════════════════════════════════════════
+# 转录完成后的三类修改（对应腾讯会议的编辑能力）
+# ══════════════════════════════════════════════════════════════
+print("\n=== 7. 批量改判：把某人全部发言改给另一个人 ===")
+pid = new_project("改判测试")
+tr = client.get(f"/api/projects/{pid}/transcript").json()
+before = {}
+for s in tr["segments"]:
+    before[s["speaker"]] = before.get(s["speaker"], 0) + 1
+check("初始有 2 位说话人", len(before) == 2, before)
+
+# SPEAKER_1 -> SPEAKER_0（合并两人）
+r = client.post(f"/api/projects/{pid}/transcript/reassign",
+                json={"from": "SPEAKER_1", "to": "SPEAKER_0"})
+check("改判返回 200", r.status_code == 200, r.status_code)
+check("改判段数 = 原 SPEAKER_1 的段数",
+      r.json()["changed"] == before.get("SPEAKER_1", 0), r.json().get("changed"))
+
+tr = client.get(f"/api/projects/{pid}/transcript").json()
+after = {}
+for s in tr["segments"]:
+    after[s["speaker"]] = after.get(s["speaker"], 0) + 1
+check("全部并到 SPEAKER_0", after == {"SPEAKER_0": sum(before.values())}, after)
+check("num_speakers 重算为 1", tr["num_speakers"] == 1, tr["num_speakers"])
+check("总段数不变", len(tr["segments"]) == len(before and tr["segments"]))
+
+print("\n=== 8. 改判：显示名跟着迁移 ===")
+client.patch(f"/api/projects/{pid}/transcript",
+             json={"segments": [], "speaker_map": {"SPEAKER_0": "leader"}})
+r = client.post(f"/api/projects/{pid}/transcript/reassign",
+                json={"from": "SPEAKER_0", "to": "BOSS"})
+check("改判到新标签 200", r.status_code == 200, r.status_code)
+tr = client.get(f"/api/projects/{pid}/transcript").json()
+check("标签已变 BOSS", all(s["speaker"] == "BOSS" for s in tr["segments"]))
+check("显示名迁移到 BOSS", tr["speaker_map"].get("BOSS") == "leader",
+      tr["speaker_map"])
+check("旧标签从 speaker_map 移除", "SPEAKER_0" not in tr["speaker_map"],
+      tr["speaker_map"])
+txt = client.get(f"/api/projects/{pid}/export?fmt=txt").json()["content"]
+check("导出用迁移后的显示名", "leader" in txt, txt[:80])
+
+print("\n=== 9. 改判的边界 ===")
+check("缺 from 参数 -> 400",
+      client.post(f"/api/projects/{pid}/transcript/reassign",
+                  json={"to": "X"}).status_code == 400)
+check("缺 to 参数 -> 400",
+      client.post(f"/api/projects/{pid}/transcript/reassign",
+                  json={"from": "X"}).status_code == 400)
+r = client.post(f"/api/projects/{pid}/transcript/reassign",
+                json={"from": "BOSS", "to": "BOSS"})
+check("from == to 返回 changed=0", r.status_code == 200
+      and r.json()["changed"] == 0, r.json())
+check("改判不存在的说话人 -> 404",
+      client.post(f"/api/projects/{pid}/transcript/reassign",
+                  json={"from": "不存在", "to": "X"}).status_code == 404)
+check("不存在项目改判 -> 404",
+      client.post("/api/projects/nope/transcript/reassign",
+                  json={"from": "a", "to": "b"}).status_code == 404)
+client.delete(f"/api/projects/{pid}")
+
+print("\n=== 10. 三类修改一次性提交 ===")
+pid = new_project("三类修改")
+tr = client.get(f"/api/projects/{pid}/transcript").json()
+segs = tr["segments"]
+# 同时：改 display name、改第一句归属、改第二句文字
+payload = {
+    "segments": [
+        {"id": segs[0]["id"], "speaker": "SPEAKER_1"},      # 归属改判
+        {"id": segs[1]["id"], "text": "改过的第二句"},        # 文字校对
+    ],
+    "speaker_map": {"SPEAKER_0": "leader", "SPEAKER_1": "我"},
+}
+r = client.patch(f"/api/projects/{pid}/transcript", json=payload)
+check("一次 PATCH 成功", r.status_code == 200, r.status_code)
+tr = client.get(f"/api/projects/{pid}/transcript").json()
+check("改名生效", tr["speaker_map"] == {"SPEAKER_0": "leader", "SPEAKER_1": "我"},
+      tr["speaker_map"])
+check("归属改判生效", tr["segments"][0]["speaker"] == "SPEAKER_1",
+      tr["segments"][0]["speaker"])
+check("文字校对生效", tr["segments"][1]["text"] == "改过的第二句",
+      tr["segments"][1]["text"])
+check("未提及的段保持原样", tr["segments"][2]["text"] == segs[2]["text"])
+txt = client.get(f"/api/projects/{pid}/export?fmt=txt").json()["content"]
+check("导出同时反映改名与新归属",
+      "leader" in txt and "我" in txt and "改过的第二句" in txt, txt[:200])
+check("导出不再出现原始编号",
+      "SPEAKER_0" not in txt and "SPEAKER_1" not in txt, txt[:200])
+client.delete(f"/api/projects/{pid}")
 
 client.delete(f"/api/projects/{pid}")
 shutil.rmtree(TMP, ignore_errors=True)

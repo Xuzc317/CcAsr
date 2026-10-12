@@ -94,13 +94,34 @@ export async function saveTranscriptEdits(
     segments: { id: string; text?: string; speaker?: string }[];
     speaker_map?: Record<string, string>;
   },
-): Promise<{ updated: number }> {
-  return request<{ updated: number }>(
+): Promise<{ updated: number; transcript: MergedTranscript }> {
+  return request<{ updated: number; transcript: MergedTranscript }>(
     `${API_BASE}/projects/${projectId}/transcript`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+    },
+  );
+}
+
+/**
+ * 把某个说话人的**全部**发言改判给另一个说话人。
+ *
+ * `to` 是新标签时相当于重命名整个说话人；已存在时相当于合并两人。
+ * 单独用一个接口是因为长会议有几百段，逐段 PATCH 又慢又可能半改。
+ */
+export async function reassignSpeaker(
+  projectId: string,
+  from: string,
+  to: string,
+): Promise<{ changed: number; transcript: MergedTranscript }> {
+  return request<{ changed: number; transcript: MergedTranscript }>(
+    `${API_BASE}/projects/${projectId}/transcript/reassign`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to }),
     },
   );
 }
