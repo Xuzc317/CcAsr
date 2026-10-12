@@ -315,6 +315,8 @@ def _run_project_summary(project_id: str) -> None:
     proj.summary_state = TaskState.completed
     proj.summary_progress = 1.0
     proj.summary_completed_at = datetime.now(timezone.utc).isoformat()
+    # 纪要已是最新，清掉「待更新」标记
+    proj.summary_stale = False
     logger.info("[project %s] 会议纪要完成: %d 字符", project_id, len(summary_md))
 
 
@@ -517,7 +519,13 @@ async def get_recording_transcript(project_id: str, recording_id: str):
 
 @app.get("/api/projects/{project_id}/transcript")
 async def get_project_transcript(project_id: str):
-    """获取合并后的会议转录文档（跨录音统一时间轴）"""
+    """
+    获取合并后的会议转录文档（跨录音统一时间轴）。
+
+    统一走 ``build_transcript()``：它会优先读已保存的 transcript.json
+    （保留用户的校对与改名），并在旧文件缺少 ``revision`` 时补一个 0 ——
+    否则前端的并发校验没有基准可比。
+    """
     store = get_project_store()
     _require_project(store, project_id)
 
@@ -529,23 +537,30 @@ async def get_project_transcript(project_id: str):
         store.save_transcript(project_id, transcript)
         return JSONResponse(content=transcript)
 
-    with open(p, "r", encoding="utf-8") as f:
-        return JSONResponse(content=json.load(f))
+    return JSONResponse(content=store.build_transcript(project_id))
 
 
 @app.patch("/api/projects/{project_id}/transcript")
 async def update_project_transcript(project_id: str, payload: dict):
     """
-    保存对合并文档的编辑（校对文本、说话人改名、单句归属调整）。
+    保存对合并文档的编辑（校对文本、说话人改名、单句/批量归属调整）。
 
-    接受 ``{"segments":[{"id":..., "text":..., "speaker":...}], "speaker_map":{...}}``，
+    接受::
+
+        {"segments":[{"id":..., "text":..., "speaker":...}],
+         "speaker_map":{...},
+         "revision": <客户端已知的修订号，可选>}
+
     只更新传入的字段，未提及的段落保持原样。
 
-    注意区分两个概念：
+    三个概念要分清：
       - ``segments[].speaker``  = **这一句是谁说的**（改归属）
       - ``speaker_map``         = **显示名**（SPEAKER_0 → 「leader」）
+      - ``revision``            = 并发保护；与磁盘上的不一致说明
+                                  另一个页面已经改过，返回 409 让前端提示刷新
 
-    两者都会反映到导出结果：导出用显示名，归属决定某句挂谁的显示名。
+    返回 ``changes`` 明细（text / speaker / renamed 三类计数），
+    **口径与前端底部确认栏完全一致** —— 曾经后端只报 2 而前端显示 4。
     """
     store = get_project_store()
     proj = _require_project(store, project_id)
@@ -554,34 +569,74 @@ async def update_project_transcript(project_id: str, payload: dict):
     if not p.exists():
         raise HTTPException(status_code=400, detail="合并文档尚未生成")
 
-    with open(p, "r", encoding="utf-8") as f:
-        transcript = json.load(f)
+    # 读-改-写全程持锁：两个标签页同时保存时不会互相覆盖
+    with store.transcript_lock(project_id):
+        with open(p, "r", encoding="utf-8") as f:
+            transcript = json.load(f)
 
-    edits = {s.get("id"): s for s in (payload or {}).get("segments", [])
-             if isinstance(s, dict) and s.get("id")}
+        client_rev = (payload or {}).get("revision")
+        server_rev = int(transcript.get("revision") or 0)
+        if client_rev is not None and int(client_rev) != server_rev:
+            raise HTTPException(
+                status_code=409,
+                detail=(f"文档已被其他页面修改（服务端修订号 {server_rev}，"
+                        f"你基于 {client_rev}）。请刷新后重新编辑，"
+                        "以免覆盖他人的修改。"))
 
-    updated = 0
-    for seg in transcript.get("segments", []):
-        e = edits.get(seg.get("id"))
-        if not e:
-            continue
-        for field in ("text", "speaker"):
-            if field in e and e[field] != seg.get(field):
-                seg[field] = e[field]
-                updated += 1
+        edits = {s.get("id"): s for s in (payload or {}).get("segments", [])
+                 if isinstance(s, dict) and s.get("id")}
 
-    speaker_map = (payload or {}).get("speaker_map")
-    if isinstance(speaker_map, dict):
-        transcript["speaker_map"] = speaker_map
+        n_text = 0
+        n_speaker = 0
+        for seg in transcript.get("segments", []):
+            e = edits.get(seg.get("id"))
+            if not e:
+                continue
+            if "text" in e and e["text"] != seg.get("text"):
+                seg["text"] = e["text"]
+                n_text += 1
+            if "speaker" in e and e["speaker"] != seg.get("speaker"):
+                seg["speaker"] = e["speaker"]
+                n_speaker += 1
 
-    # speaker 字段变了要重算说话人总数，否则前端统计会不准
+        n_renamed = 0
+        speaker_map = (payload or {}).get("speaker_map")
+        if isinstance(speaker_map, dict):
+            old_map = transcript.get("speaker_map") or {}
+            keys = set(old_map) | set(speaker_map)
+            n_renamed = sum(
+                1 for k in keys
+                if (old_map.get(k) or "") != (speaker_map.get(k) or ""))
+            transcript["speaker_map"] = speaker_map
+
+        updated = n_text + n_speaker + n_renamed
+
+        # speaker 变了要重算说话人总数，否则统计会不准
+        if n_speaker:
+            transcript["num_speakers"] = len(
+                {s.get("speaker") for s in transcript.get("segments", [])
+                 if s.get("speaker")})
+        if updated:
+            store.bump_revision(transcript)
+
+        store.save_transcript(project_id, transcript)
+
     if updated:
-        transcript["num_speakers"] = len(
-            {s.get("speaker") for s in transcript.get("segments", []) if s.get("speaker")})
+        # 转录变了，之前的纪要就过期了 —— 前端据此提示「纪要待更新」
+        try:
+            store.mark_summary_stale(project_id, True)
+        except Exception:
+            logger.debug("[project %s] 标记纪要过期失败（不影响保存）", project_id)
 
-    store.save_transcript(project_id, transcript)
-    logger.info("[project %s] 合并文档已更新 %d 处", project_id, updated)
-    return JSONResponse(content={"updated": updated, "transcript": transcript})
+    logger.info("[project %s] 合并文档已更新 %d 处（文字 %d/归属 %d/显示名 %d，rev %s）",
+                project_id, updated, n_text, n_speaker, n_renamed,
+                transcript.get("revision"))
+    return JSONResponse(content={
+        "updated": updated,
+        "changes": {"text": n_text, "speaker": n_speaker, "renamed": n_renamed},
+        "revision": transcript.get("revision"),
+        "transcript": transcript,
+    })
 
 
 @app.post("/api/projects/{project_id}/transcript/reassign")

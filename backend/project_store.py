@@ -61,6 +61,8 @@ class ProjectStore:
         self._locks_guard = threading.Lock()
         # 正在运行队列的项目集合（进程内状态，不持久化）
         self._queue_running: set[str] = set()
+        # 转录编辑的项目级写锁（防止多标签页读-改-写互相覆盖）
+        self._transcript_locks: dict[str, threading.Lock] = {}
 
         self._load()
 
@@ -106,6 +108,7 @@ class ProjectStore:
                     summary_completed_at=d.get("summary_completed_at"),
                     reference_name=d.get("reference_name"),
                     has_reference=d.get("has_reference", False),
+                    summary_stale=d.get("summary_stale", False),
                 )
                 # 重启后把中断的任务标记为失败，避免永远卡在 processing
                 for r in proj.recordings:
@@ -436,6 +439,9 @@ class ProjectStore:
                 try:
                     data = json.loads(saved.read_text(encoding="utf-8"))
                     if data.get("segments"):
+                        # 旧文件没有 revision：补一个，否则前端的并发校验无从比较
+                        if not isinstance(data.get("revision"), int):
+                            data["revision"] = 0
                         return data
                 except Exception as e:
                     logger.warning("[project %s] transcript.json 读取失败，改为重新拼装: %s",
@@ -500,9 +506,54 @@ class ProjectStore:
         }
 
     def save_transcript(self, project_id: str, transcript: dict) -> Path:
+        """
+        保存合并文档。**先写临时文件再原子替换**。
+
+        直接覆盖写有个隐患：如果进程在写到一半时被杀（或磁盘写满），
+        transcript.json 会变成截断的非法 JSON，这份会议的转录就整个读不出来了。
+        os.replace 在 Windows/POSIX 上都是原子的。
+        """
         p = self._project_dir(project_id) / "transcript.json"
-        p.write_text(json.dumps(transcript, ensure_ascii=False), encoding="utf-8")
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(transcript, ensure_ascii=False), encoding="utf-8")
+        os.replace(str(tmp), str(p))
         return p
+
+    # ── 转录编辑：项目级写锁 ──────────────────────────────────
+
+    def transcript_lock(self, project_id: str) -> threading.Lock:
+        """
+        取该项目的转录写锁。
+
+        两个浏览器标签页同时保存时，读-改-写会互相覆盖；
+        用项目级锁把这段串行化（本地单进程部署足够，无需引入数据库）。
+        """
+        with self._locks_guard:
+            lock = self._transcript_locks.get(project_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._transcript_locks[project_id] = lock
+            return lock
+
+    def bump_revision(self, transcript: dict) -> int:
+        """修订号 +1；旧文件没有该字段时从 0 开始"""
+        rev = int(transcript.get("revision") or 0) + 1
+        transcript["revision"] = rev
+        return rev
+
+    def mark_summary_stale(self, project_id: str, stale: bool = True) -> None:
+        """
+        标记「转录在纪要生成之后又被改过」。
+
+        前端据此提示「纪要待更新」——否则用户改完说话人名字，
+        纪要里还是旧名字，会以为改动没生效。
+        """
+        proj = self._projects.get(project_id)
+        if not proj:
+            return
+        if proj.summary_stale != stale:
+            proj.summary_stale = stale
+            self.save()
 
     # ── 参考材料 ──────────────────────────────────────────────
 

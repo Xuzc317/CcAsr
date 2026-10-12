@@ -37,19 +37,50 @@ BASE = "http://127.0.0.1:8000"
 
 try:
     import psutil
-    _PROC = psutil.Process()
     HAS_PSUTIL = True
 except ImportError:
     HAS_PSUTIL = False
 
 
-def _rss_mb() -> float | None:
+def _find_server_pid() -> int | None:
+    """
+    找到后端服务的**工作进程** PID。
+
+    为什么要专门找：此前脚本用 ``psutil.Process()`` 测的是**自己这个客户端**，
+    于是报出「峰值内存 33 MB」，而同期服务实际约 1291 MB（QA 报告 R2-06）。
+    """
     if not HAS_PSUTIL:
         return None
     try:
-        return _PROC.memory_info().rss / 1024 / 1024
+        # 先问服务自己 —— /health 返回的 pid 是 worker（真正加载模型的进程）
+        h = requests.get(f"{BASE}/health", timeout=10).json()
+        pid = h.get("code", {}).get("pid")
+        if pid and psutil.pid_exists(int(pid)):
+            return int(pid)
     except Exception:
-        return None
+        pass
+    # 退路：按命令行找 run_server.py
+    try:
+        for p in psutil.process_iter(["pid", "name", "cmdline"]):
+            cl = " ".join(p.info.get("cmdline") or [])
+            if "run_server.py" in cl and "python" in (p.info.get("name") or "").lower():
+                return p.info["pid"]
+    except Exception:
+        pass
+    return None
+
+
+def _server_rss_mb() -> tuple[float | None, int | None]:
+    """返回（服务进程 RSS MB, PID）"""
+    if not HAS_PSUTIL:
+        return None, None
+    pid = _find_server_pid()
+    if pid is None:
+        return None, None
+    try:
+        return psutil.Process(pid).memory_info().rss / 1024 / 1024, pid
+    except Exception:
+        return None, None
 
 
 def run_transcription(audio_paths: list[Path], language: str = "zh",
@@ -66,13 +97,14 @@ def run_transcription(audio_paths: list[Path], language: str = "zh",
     if r.status_code != 202:
         raise SystemExit(f"上传失败 HTTP {r.status_code}: {r.text[:200]}")
 
-    peak = _rss_mb() or 0.0
+    peak, srv_pid = _server_rss_mb()
+    peak = peak or 0.0
     marks = {}
     last = None
     while True:
         time.sleep(3)
         p = requests.get(f"{BASE}/api/projects/{pid}", timeout=60).json()
-        cur = _rss_mb()
+        cur, _ = _server_rss_mb()
         if cur:
             peak = max(peak, cur)
         key = (p["state"], p["done_count"], p["summary_state"])
@@ -86,7 +118,7 @@ def run_transcription(audio_paths: list[Path], language: str = "zh",
         if time.time() - t0 > 3600:
             raise SystemExit("超时")
     return pid, {"wall_s": time.time() - t0, "peak_rss_mb": round(peak, 1),
-                 "timeline": marks}
+                 "server_pid": srv_pid, "timeline": marks}
 
 
 def measure(pid: str, wall: dict | None = None) -> dict:
@@ -190,10 +222,22 @@ def measure(pid: str, wall: dict | None = None) -> dict:
             perf["end_to_end_speedup"] = round(dur / wall["wall_s"], 2)
     else:
         perf["note"] = "本次未重新计时（度量已有会议）；用 --run 可获得端到端耗时"
-    perf["peak_rss_mb"] = wall.get("peak_rss_mb") if wall else _rss_mb()
-    perf["memory_collected"] = HAS_PSUTIL
-    if not HAS_PSUTIL:
-        perf["memory_note"] = "未安装 psutil，内存未采集（pip install psutil 后可采集）"
+    # 内存一律采集**服务进程**（不是本客户端）；区分「当前值」与「运行期峰值」
+    now_rss, srv_pid = _server_rss_mb()
+    perf["memory_collected"] = now_rss is not None
+    perf["server_pid"] = wall.get("server_pid") if wall else srv_pid
+    if now_rss is not None:
+        perf["current_rss_mb"] = round(now_rss, 1)
+        if wall:
+            perf["peak_rss_mb"] = wall.get("peak_rss_mb")
+            perf["memory_note"] = "峰值 = 本次运行期间每 3 秒采样的最大值（含模型加载）"
+        else:
+            perf["peak_rss_mb"] = None
+            perf["memory_note"] = ("未重新运行，只有当前值；"
+                                   "峰值需用 --run 才会采集（运行期每 3 秒采样）")
+    else:
+        perf["memory_note"] = ("未采集到服务进程内存："
+                               "请确认服务在运行，或安装 psutil（pip install psutil）")
     out["performance"] = perf
 
     out["not_measured"] = [
@@ -253,9 +297,16 @@ def print_report(d: dict) -> None:
         print(f"  端到端耗时      : {p['wall_s']:.1f}s")
         print(f"  端到端 RTF      : {p.get('end_to_end_rtf')}  "
               f"({p.get('end_to_end_speedup')}x 实时)")
-    print(f"  峰值内存        : "
-          f"{p['peak_rss_mb']} MB" if p.get("memory_collected")
-          else f"  峰值内存        : 未采集（{p.get('memory_note')}）")
+    if p.get("memory_collected"):
+        print(f"  服务进程内存    : 当前 {p.get('current_rss_mb')} MB"
+              + (f"，运行期峰值 {p['peak_rss_mb']} MB"
+                 if p.get("peak_rss_mb") else ""))
+        if p.get("server_pid"):
+            print(f"  采样对象 PID    : {p['server_pid']}（服务工作进程）")
+    else:
+        print(f"  服务进程内存    : 未采集（{p.get('memory_note')}）")
+    if p.get("memory_note") and p.get("memory_collected"):
+        print(f"  说明            : {p['memory_note']}")
     if p.get("timeline"):
         print("  状态时间线:")
         for k, v in p["timeline"].items():

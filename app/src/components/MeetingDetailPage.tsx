@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import * as api from '../services/api';
 import { formatDuration, formatTime } from '../utils/format';
+import {
+  editReducer, emptyEditState, computeChanges, totalChanges,
+} from '../utils/editState';
 import SummaryView from './SummaryView';
 import TranscriptWorkspace from './TranscriptWorkspace';
 import type { Project, MergedTranscript } from '../types';
@@ -29,11 +32,24 @@ export default function MeetingDetailPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
+  /**
+   * 转录编辑草稿。提到本层（而非放在 TranscriptWorkspace 内部）是为了：
+   *   - 切 Tab 不丢草稿（工作区是条件挂载的，卸载即丢 state）
+   *   - 保存后同步基线，避免父层 transcript 过期导致回显旧值
+   */
+  const [edit, dispatch] = useReducer(editReducer, emptyEditState);
+  /** 有未保存内容时点导出 → 提示「保存并导出」 */
+  const [pendingExport, setPendingExport] = useState<'txt' | 'json' | null>(null);
+  /** 转录改过之后纪要是否待更新（可由后端 summary_stale 初始化） */
+  const [summaryStale, setSummaryStale] = useState(false);
+
   // 上传
   const [files, setFiles] = useState<File[]>([]);
   const [language, setLanguage] = useState('zh');
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  /** 已有录音时上传区默认收起，让正文获得更多空间 */
+  const [addOpen, setAddOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── 共享音频播放器 ───────────────────────────────────────────
@@ -41,6 +57,14 @@ export default function MeetingDetailPage() {
   // <audio>，避免两处各持一个播放器导致状态互相打架。
   const audioRef = useRef<HTMLAudioElement>(null);
   const [currentRec, setCurrentRec] = useState<string | null>(null);
+  /**
+   * 当前已挂载音频的 recording_id。
+   *
+   * 必须用 ref 而不是直接读 ``currentRec`` state：state 更新是异步的，
+   * 首次跳转时 currentRec 还是 null，判断会走「同一录音」分支，
+   * 于是对一个**还没有 src** 的 <audio> 设 currentTime —— 静默失败、什么都不播。
+   */
+  const currentRecRef = useRef<string | null>(null);
   const [activeSegId, setActiveSegId] = useState<string | null>(null);
 
   /** 播放指定录音的某个本地时间点（跨录音自动换源） */
@@ -48,47 +72,34 @@ export default function MeetingDetailPage() {
     recordingId: string, localStart: number, segId?: string,
   ) => {
     const audio = audioRef.current;
-    if (!audio || !projectId) return;
+    if (!audio || !projectId || !recordingId) return;
     setActiveSegId(segId ?? null);
-    if (currentRec !== recordingId) {
+
+    if (currentRecRef.current !== recordingId) {
+      currentRecRef.current = recordingId;
       setCurrentRec(recordingId);
       audio.src = api.recordingAudioUrl(projectId, recordingId);
       const onLoaded = () => {
-        audio.currentTime = localStart;
+        audio.currentTime = Math.max(0, localStart);
         audio.play().catch(() => { /* 未交互时忽略 */ });
         audio.removeEventListener('loadedmetadata', onLoaded);
       };
       audio.addEventListener('loadedmetadata', onLoaded);
       audio.load();
     } else {
-      audio.currentTime = localStart;
+      audio.currentTime = Math.max(0, localStart);
       audio.play().catch(() => { /* 忽略自动播放限制 */ });
     }
-  }, [currentRec, projectId]);
-
-  /** 纪要里的证据引用 → 跳到对应录音位置 */
-  const handleJumpToRef = useCallback((ref: {
-    start: number; recording_id?: string; recording_index?: number;
-  }) => {
-    // 优先用 recording_id；否则按 recording_index 从 transcript 里找
-    let rid = ref.recording_id;
-    let localStart = ref.start;
-    const meta = transcript?.recordings?.find(
-      (r) => r.recording_id === rid || r.order === ref.recording_index);
-    if (meta) {
-      rid = meta.recording_id;
-      localStart = ref.start - meta.offset;   // 全局时间 → 该录音本地时间
-    }
-    if (!rid || localStart < 0) return;
-    playAt(rid, localStart);
-    setTab('transcript');       // 切到转录视图，便于看到上下文
-  }, [playAt, transcript]);
+  }, [projectId]);
 
   // ── 加载项目 ─────────────────────────────────────────────────
   const loadProject = useCallback(async () => {
     if (!projectId) return;
     try {
-      setProject(await api.getProject(projectId));
+      const p = await api.getProject(projectId);
+      setProject(p);
+      // 后端持久化的「纪要待更新」标记（服务重启/换页面也保留）
+      if (typeof p.summary_stale === 'boolean') setSummaryStale(p.summary_stale);
       setError('');
     } catch (e) {
       setError(e instanceof Error ? e.message : '加载失败');
@@ -114,9 +125,50 @@ export default function MeetingDetailPage() {
   const loadTranscript = useCallback(async () => {
     if (!projectId) return;
     try {
-      setTranscript(await api.getTranscript(projectId));
+      const t = await api.getTranscript(projectId);
+      setTranscript(t);
+      dispatch({ type: 'load', transcript: t });   // 同时重置草稿与基线
     } catch { /* 尚无完成的录音，正常 */ }
   }, [projectId]);
+
+  /**
+   * 纪要里的证据引用 → 跳到对应录音位置，并滚动高亮该句。
+   *
+   * 关键点：证据引用带的是**全局**时间，必须换算成该录音的本地时间，
+   * 否则会跳到音频末尾（QA 报告 R2-03）。优先用后端直接给的 local_start /
+   * segment_id，拿不到才回退到按 offset 换算 —— 绝不能用全局时间兜底。
+   */
+  const handleJumpToRef = useCallback((ref: {
+    start: number;
+    local_start?: number;
+    segment_id?: string;
+    recording_id?: string;
+    recording_index?: number;
+  }) => {
+    let rid = ref.recording_id;
+    let localStart: number | null =
+      typeof ref.local_start === 'number' ? ref.local_start : null;
+
+    const recs = transcript?.recordings ?? [];
+    const meta = recs.find((r) => r.recording_id === rid)
+      ?? recs.find((r) => r.order === ref.recording_index);
+
+    if (meta) {
+      rid = meta.recording_id;
+      // 没有 local_start 时按 offset 换算；换算结果必须落在该录音时长内
+      if (localStart === null) localStart = ref.start - meta.offset;
+      if (localStart < 0) localStart = 0;
+    }
+
+    // 换算不出来就明确放弃，不要用错误的时间去播
+    if (!rid || localStart === null) {
+      setTab('transcript');
+      return;
+    }
+
+    playAt(rid, localStart, ref.segment_id);
+    setTab('transcript');       // 切到转录视图，便于看到上下文
+  }, [playAt, transcript]);
 
   const loadSummary = useCallback(async () => {
     if (!projectId) return;
@@ -125,6 +177,58 @@ export default function MeetingDetailPage() {
       setSummaryRaw(s.summary);
       if (s.error && s.state === 'failed') setError(`纪要生成失败：${s.error}`);
     } catch { /* 忽略 */ }
+  }, [projectId]);
+
+  /**
+   * 转录保存成功后的联动。
+   *
+   * 纪要基于旧转录生成，改了说话人名/文字后必须提示「纪要待更新」，
+   * 否则用户会以为改名没生效（QA 报告 R2-05 的观感问题）。
+   */
+  const handleTranscriptSaved = useCallback((saved: MergedTranscript) => {
+    setTranscript((prev) => (prev
+      ? { ...prev, revision: saved.revision ?? prev.revision }
+      : prev));
+    setSummaryStale(true);
+    loadSummary();
+  }, [loadSummary]);
+
+  /**
+   * 保存草稿 —— 供工作区与「保存并导出」共用同一条路径。
+   * 抛错表示失败，调用方据此决定是否继续导出。
+   */
+  const saveDraft = useCallback(async () => {
+    if (totalChanges(computeChanges(edit)) === 0) return;
+    try {
+      const res = await api.saveTranscriptEdits(projectId!, {
+        segments: edit.segments.map((s) => ({
+          id: s.id, text: s.text, speaker: s.speaker,
+        })),
+        speaker_map: edit.names,
+        revision: edit.revision,
+      });
+      dispatch({ type: 'saved', transcript: res.transcript });
+      handleTranscriptSaved(res.transcript);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '保存失败');
+      throw e;      // 让「保存并导出」不再继续导出
+    }
+  }, [projectId, edit, handleTranscriptSaved]);
+
+  const doExport = useCallback(async (fmt: 'txt' | 'json') => {
+    setPendingExport(null);
+    try {
+      const { filename, content } = await api.exportProject(projectId!, fmt);
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '导出失败');
+    }
   }, [projectId]);
 
   useEffect(() => {
@@ -144,6 +248,21 @@ export default function MeetingDetailPage() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
+
+  /**
+   * 预加载转录元数据。
+   *
+   * 纪要里的证据引用要用 ``recordings[].offset`` 把全局时间换算成本地时间，
+   * 而 transcript 此前只在切到「合并转录」Tab 时才加载 —— 于是"在纪要里直接
+   * 点某个证据"会拿不到 offset，换算不出位置（QA 报告 R2-03 的成因）。
+   * 这里在转录已完成时就先取一次，保证点证据时元数据已就绪。
+   */
+  useEffect(() => {
+    if (transcript || busy || loading) return;
+    if (project?.has_summary || project?.state === 'completed') {
+      void Promise.resolve().then(loadTranscript);
+    }
+  }, [transcript, busy, loading, project, loadTranscript]);
 
   // ── 上传 ─────────────────────────────────────────────────────
   const addFiles = (list: FileList | null) => {
@@ -225,6 +344,9 @@ export default function MeetingDetailPage() {
     );
   }
 
+  /** 已经有录音了 —— 上传区可以收起来，正文更重要 */
+  const hasRecordings = (project.recordings?.length ?? 0) > 0;
+
   const structured = summaryRaw ? api.parseStructuredSummary(summaryRaw) : null;
 
   return (
@@ -267,30 +389,53 @@ export default function MeetingDetailPage() {
         </div>
       )}
 
-      {/* 上传区 */}
-      <div
-        style={{ ...S.drop, ...(dragOver ? S.dropActive : {}) }}
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => {
-          e.preventDefault(); setDragOver(false);
-          addFiles(e.dataTransfer.files);
-        }}
-        onClick={() => fileInputRef.current?.click()}
-      >
-        <input
-          ref={fileInputRef} type="file" multiple accept={ACCEPT}
-          style={{ display: 'none' }}
-          onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
-        />
-        <div style={{ fontSize: 26, marginBottom: 4 }}>＋</div>
-        <div style={S.dropText}>
-          点击或拖拽音频到此处，<b>可一次选多个</b>
+      {/* 上传区 —— 已有录音时默认收成一行，把空间让给正文 */}
+      {hasRecordings && !addOpen ? (
+        <div style={S.addCollapsed}>
+          <button
+            className="btn btn-secondary"
+            style={S.addBtn}
+            onClick={() => setAddOpen(true)}
+          >
+            ＋ 添加录音
+          </button>
+          <span style={S.addHint}>
+            已有 {project.recording_count} 段录音；追加的录音会排在队尾
+          </span>
         </div>
-        <div style={S.dropHint}>
-          支持 {ACCEPT.replace(/\./g, '').toUpperCase()}；多个文件将按文件名顺序排队转录
+      ) : (
+        <div
+          style={{ ...S.drop, ...(dragOver ? S.dropActive : {}) }}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault(); setDragOver(false);
+            addFiles(e.dataTransfer.files);
+          }}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <input
+            ref={fileInputRef} type="file" multiple accept={ACCEPT}
+            style={{ display: 'none' }}
+            onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
+          />
+          <div style={{ fontSize: 26, marginBottom: 4 }}>＋</div>
+          <div style={S.dropText}>
+            点击或拖拽音频到此处，<b>可一次选多个</b>
+          </div>
+          <div style={S.dropHint}>
+            支持 {ACCEPT.replace(/\./g, '').toUpperCase()}；多个文件将按文件名顺序排队转录
+          </div>
+          {hasRecordings && (
+            <button
+              style={S.collapseBtn}
+              onClick={(e) => { e.stopPropagation(); setAddOpen(false); }}
+            >
+              收起
+            </button>
+          )}
         </div>
-      </div>
+      )}
 
       {files.length > 0 && (
         <div style={S.queue}>
@@ -375,6 +520,7 @@ export default function MeetingDetailPage() {
             onRegenerate={handleRegenerate}
             onReference={handleReference}
             onJumpTo={handleJumpToRef}
+            stale={summaryStale}
           />
         )}
 
@@ -384,9 +530,12 @@ export default function MeetingDetailPage() {
               <TranscriptWorkspace
                 projectId={project.project_id}
                 transcript={transcript}
-                onSaved={loadSummary}
+                edit={edit}
+                dispatch={dispatch}
+                onSaved={handleTranscriptSaved}
                 activeSegId={activeSegId}
                 onPlay={playAt}
+                onExportWithDraft={(fmt) => setPendingExport(fmt)}
               />
             </div>
           ) : (
@@ -429,6 +578,36 @@ export default function MeetingDetailPage() {
           </div>
         )}
       </div>
+
+      {/* 导出前提示保存（有未保存修改时） */}
+      {pendingExport && (
+        <div style={S.overlay} onClick={() => setPendingExport(null)}>
+          <div style={S.dialog} onClick={(e) => e.stopPropagation()}>
+            <div style={S.dialogTitle}>还有未保存的修改</div>
+            <div style={S.dialogBody}>
+              直接导出会得到<b>修改前</b>的内容。要先保存再导出吗？
+            </div>
+            <div style={S.dialogFoot}>
+              <button className="btn btn-secondary" style={S.dialogBtn}
+                      onClick={() => setPendingExport(null)}>
+                取消
+              </button>
+              <button className="btn btn-secondary" style={S.dialogBtn}
+                      onClick={() => { void doExport(pendingExport); }}>
+                仍导出旧内容
+              </button>
+              <button className="btn btn-primary" style={S.dialogBtn}
+                      onClick={async () => {
+                        const fmt = pendingExport;
+                        await saveDraft();
+                        await doExport(fmt);
+                      }}>
+                保存并导出
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -436,7 +615,7 @@ export default function MeetingDetailPage() {
 // ── 纪要面板 ─────────────────────────────────────────────────
 
 function SummaryPanel({
-  project, raw, structured, onRegenerate, onReference, onJumpTo,
+  project, raw, structured, onRegenerate, onReference, onJumpTo, stale,
 }: {
   project: Project;
   raw: string | null;
@@ -444,6 +623,8 @@ function SummaryPanel({
   onRegenerate: () => void;
   onReference: (f: File) => void;
   onJumpTo?: (ref: { start: number; recording_id?: string; recording_index?: number }) => void;
+  /** 转录在纪要生成之后被改过 —— 提示需要重新生成 */
+  stale?: boolean;
 }) {
   const refInput = useRef<HTMLInputElement>(null);
 
@@ -476,6 +657,16 @@ function SummaryPanel({
 
   return (
     <div style={S.summaryWrap}>
+      {stale && (
+        <div style={S.staleBanner}>
+          <span>⚠ 转录已在生成纪要之后被修改，当前纪要可能已过时。</span>
+          <button className="btn btn-secondary"
+                  style={{ padding: '3px 10px', fontSize: 12, borderRadius: 8 }}
+                  onClick={onRegenerate}>
+            重新生成纪要
+          </button>
+        </div>
+      )}
       <div style={S.summaryBar}>
         {project.reference_name
           ? <span style={S.refChip}>📎 {project.reference_name}</span>
@@ -533,6 +724,41 @@ const S: Record<string, React.CSSProperties> = {
     padding: '6px 0 10px', borderBottom: '1px solid #e6e6ee', marginBottom: 8,
   },
   nowPlaying: { fontSize: 12, color: '#888', whiteSpace: 'nowrap' },
+  overlay: {
+    position: 'fixed', inset: 0, background: 'rgba(20,22,40,.35)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200,
+  },
+  dialog: {
+    width: 380, maxWidth: '92vw', background: '#fff', borderRadius: 12,
+    boxShadow: '0 12px 40px rgba(0,0,0,.18)', overflow: 'hidden',
+  },
+  dialogTitle: {
+    padding: '13px 16px', fontSize: 14.5, fontWeight: 700,
+    color: '#2b2b38', borderBottom: '1px solid #eee',
+  },
+  dialogBody: { padding: '14px 16px', fontSize: 13, color: '#555', lineHeight: 1.7 },
+  dialogFoot: {
+    display: 'flex', justifyContent: 'flex-end', gap: 8,
+    padding: '12px 16px', borderTop: '1px solid #eee', background: '#fcfcfd',
+  },
+  dialogBtn: { padding: '6px 14px', fontSize: 12.5, borderRadius: 8 },
+  addCollapsed: {
+    display: 'flex', alignItems: 'center', gap: 12,
+    margin: '0 0 12px', flexShrink: 0,
+  },
+  addBtn: { padding: '6px 14px', fontSize: 12.5, borderRadius: 8 },
+  addHint: { fontSize: 12, color: '#999' },
+  collapseBtn: {
+    position: 'absolute', top: 8, right: 10, fontSize: 11.5,
+    color: '#999', background: '#fff', border: '1px solid #e2e2ee',
+    borderRadius: 8, padding: '2px 9px', cursor: 'pointer',
+  },
+  staleBanner: {
+    display: 'flex', alignItems: 'center', gap: 10,
+    padding: '8px 14px', margin: '0 0 12px',
+    background: '#fff8e6', border: '1px solid #f0d9a0',
+    borderRadius: 8, fontSize: 12.5, color: '#8a6100',
+  },
   error: {
     padding: '10px 14px', background: '#fff0f0', border: '1px solid #ffcccc',
     borderRadius: 8, color: '#cc3333', fontSize: 13, marginBottom: 12,

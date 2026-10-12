@@ -105,26 +105,61 @@ blocks 数组中每个元素的 type 必须是以下之一，并带对应字段�
 
 def _build_user_prompt(project_name: str, transcript_text: str,
                        recording_count: int, total_duration: float,
-                       reference: Optional[str] = None) -> str:
+                       reference: Optional[str] = None,
+                       speakers: Optional[dict[str, str]] = None) -> str:
     parts = [
         f"会议名称：{project_name}",
         f"录音段数：{recording_count} 段，总时长约 {total_duration / 60:.1f} 分钟",
     ]
+
+    # 明确给出参与者名单：LLM 只能从这里取人名，避免把录音编号当成不同的人
+    if speakers:
+        roster = "、".join(speakers.values())
+        detail = "\n".join(f"  - {name}" for name in speakers.values())
+        parts.append(
+            f"\n## 参会人（共 {len(speakers)} 人，**必须**用这些名字）\n"
+            f"{detail}\n"
+            f"转录里的说话人已经用上述名字标注。**不要**编造名单之外的人，"
+            f"也**不要**因为同一人出现在多段录音里就重复计数。\n"
+            f"（参考：{roster}）"
+        )
+
     if reference:
         parts.append(f"\n## 参考材料（议程/参会名单等，供你理解会议背景）\n\n{reference[:8000]}")
 
     parts.append(
         "\n## 会议转录\n\n"
-        "（格式：[全局时间] 说话人: 内容；全局时间是整个会议的统一时间轴，"
-        "请用其中的时间点填充 timeline 的 time 字段）\n\n"
+        "（格式：[全局时间] 说话人: 内容（录音N）；全局时间是整个会议的统一时间轴，"
+        "请用其中的时间点填充 timeline 的 time 字段。"
+        "括号里的「录音N」只表示这句话来自第几段录音文件，**不是**说话人身份的一部分）\n\n"
         f"{transcript_text}"
     )
     parts.append("\n请按系统提示的 JSON 结构输出会议纪要。只输出 JSON。")
     return "\n".join(parts)
 
 
+def _speaker_table(transcript: dict) -> dict[str, str]:
+    """
+    全局参与者表：稳定 speaker ID → 显示名。
+
+    显示名来自用户设置的 ``speaker_map``（SPEAKER_0 → 「leader」）；
+    没设置的回落原始 ID。LLM 只能从这里取人名。
+    """
+    smap = transcript.get("speaker_map") or {}
+    ids = {s.get("speaker") for s in transcript.get("segments", [])
+           if s.get("speaker")}
+    return {sid: (smap.get(sid) or "").strip() or sid for sid in sorted(ids)}
+
+
 def _format_transcript(transcript: dict, max_chars: int) -> tuple[str, bool]:
-    """把合并转录转成 LLM 可读文本，超长则截断。"""
+    """
+    把合并转录转成 LLM 可读文本，超长则截断。
+
+    **说话人一律用显示名**（leader / 我），录音编号单独作为来源标注。
+    此前把 ``R1 SPEAKER_0`` 与 ``R2 SPEAKER_0`` 混排，LLM 会当成 4 个不同的人
+    （QA 报告 R2-05）—— 同一场 2 人会议被列成 4 个参会人。
+    """
+    names = _speaker_table(transcript)
     lines = []
     for seg in transcript.get("segments", []):
         text = (seg.get("text") or "").strip()
@@ -132,10 +167,12 @@ def _format_transcript(transcript: dict, max_chars: int) -> tuple[str, bool]:
             continue
         start = seg.get("start", 0.0)
         h, m, s = int(start // 3600), int((start % 3600) // 60), int(start % 60)
-        speaker = seg.get("speaker") or "UNKNOWN"
+        sid = seg.get("speaker") or "UNKNOWN"
+        who = names.get(sid, sid)
+        # 录音编号只作来源标注，且不放在说话人前面，避免被当成身份的一部分
         rec_idx = seg.get("recording_index")
-        tag = f"R{rec_idx + 1} " if rec_idx is not None else ""
-        lines.append(f"[{h:02d}:{m:02d}:{s:02d}] {tag}{speaker}: {text}")
+        src = f"（录音{rec_idx + 1}）" if rec_idx is not None else ""
+        lines.append(f"[{h:02d}:{m:02d}:{s:02d}] {who}: {text}{src}")
 
     full = "\n".join(lines)
     if len(full) <= max_chars:
@@ -258,8 +295,14 @@ def _resolve_source_refs(
         out.append({
             "start": round(float(seg.get("start", 0.0)), 2),
             "end": round(float(seg.get("end", 0.0)), 2),
+            # 带上 segment_id 与 local_start，前端才能：
+            #   - 精确滚动并高亮到这一句（而不是只跳到某个时间点）
+            #   - 直接换算成音频本地时间，避免用全局时间误跳（曾导致跳到末尾）
+            "segment_id": seg.get("id"),
+            "local_start": round(float(seg.get("local_start", 0.0)), 2),
             "recording_id": seg.get("recording_id"),
             "recording_index": seg.get("recording_index"),
+            "speaker": seg.get("speaker"),
             "quote": (seg.get("text") or "")[:80],
         })
         if len(out) >= max_refs:
@@ -579,6 +622,7 @@ def generate_meeting_summary(
                              if r.state.value == "completed"]),
         total_duration=transcript.get("duration", 0.0),
         reference=reference_content,
+        speakers=_speaker_table(transcript),
     )
 
     def call_llm(extra_note: str = "") -> str:

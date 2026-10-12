@@ -39,6 +39,8 @@ export interface Project {
   summary_progress: number;
   has_summary: boolean;
   has_reference: boolean;
+  /** 转录在纪要生成之后被改过 —— 提示「纪要待更新」 */
+  summary_stale?: boolean;
   reference_name?: string;
   summary_error?: string;
   created_at?: string;
@@ -85,6 +87,8 @@ export interface MergedTranscript {
   segments: MergedSegment[];
   recordings: RecordingMeta[];
   speaker_map?: Record<string, string>;
+  /** 服务端修订号：每次保存 +1，用于检测"旧页面覆盖新修改" */
+  revision?: number;
   merged: true;
 }
 

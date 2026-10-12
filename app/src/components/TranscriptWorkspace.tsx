@@ -4,22 +4,24 @@ import type { VirtuosoHandle } from 'react-virtuoso';
 import * as api from '../services/api';
 import { formatTime, speakerColor } from '../utils/format';
 import type { MergedSegment, MergedTranscript } from '../types';
+import type { EditAction, EditState } from '../utils/editState';
+import { computeChanges, speakerOrder, totalChanges } from '../utils/editState';
+import BatchReassignDialog from './BatchReassignDialog';
 
 interface Props {
   projectId: string;
   transcript: MergedTranscript;
-  onSaved?: () => void;
+  /** 编辑草稿状态（由 MeetingDetailPage 持有，切换 Tab 不丢） */
+  edit: EditState;
+  dispatch: React.Dispatch<EditAction>;
+  /** 保存成功后回调（父级据此刷新纪要等） */
+  onSaved?: (saved: MergedTranscript) => void;
   /** 当前高亮的片段（由父级共享播放器驱动，如从纪要证据跳转过来） */
   activeSegId?: string | null;
   /** 请求播放某段录音的某个本地时间点（父级持有唯一的 <audio>） */
   onPlay?: (recordingId: string, localStart: number, segId?: string) => void;
-}
-
-/** 待保存的改动统计 */
-interface ChangeSummary {
-  text: number;       // 改过文字的段数
-  speaker: number;    // 改过归属的段数
-  renamed: number;    // 改过显示名的说话人数
+  /** 有未保存修改时点导出，父级弹出「保存并导出」 */
+  onExportWithDraft?: (fmt: 'txt' | 'json') => void;
 }
 
 /**
@@ -29,20 +31,18 @@ interface ChangeSummary {
  *   1. **改说话人名**：顶部「说话人」区，SPEAKER_0 → 「leader」，全局生效
  *   2. **改单句归属**：点句首的说话人标签，改判这一句是谁说的
  *   3. **改文字**：双击正文校对
+ *   + **批量改判**：工具栏按钮，把某人的全部发言改归另一人
  *
- * 所有修改先留在本地（草稿态），底部确认栏汇总「待保存 N 处」，
+ * 所有修改都写在**父级持有的草稿**里，底部确认栏汇总「待保存 N 处」，
  * 点「确认修改」才写回后端；「撤销全部修改」回到上次保存的状态。
  *
  * 音频播放器由父级 MeetingDetailPage 统一持有（`onPlay`），
  * 使纪要里的「证据」跳转与这里的点击播放共用同一个播放器。
  */
 export default function TranscriptWorkspace({
-  projectId, transcript, onSaved, activeSegId, onPlay,
+  projectId, transcript, edit, dispatch, onSaved,
+  activeSegId, onPlay, onExportWithDraft,
 }: Props) {
-  const [segments, setSegments] = useState<MergedSegment[]>(transcript.segments);
-  const [speakerMap, setSpeakerMap] = useState<Record<string, string>>(
-    transcript.speaker_map || {},
-  );
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
@@ -51,151 +51,75 @@ export default function TranscriptWorkspace({
   const [reassignId, setReassignId] = useState<string | null>(null);
   /** 折叠/展开顶部说话人区（段数多时省空间） */
   const [showSpeakerBar, setShowSpeakerBar] = useState(true);
+  const [showBatch, setShowBatch] = useState(false);
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
 
-  // 基线：上次保存（或初始加载）的状态，用于算改动数、也用于撤销
-  const [baseline, setBaseline] = useState(() => ({
-    segments: transcript.segments,
-    speakerMap: transcript.speaker_map || {},
-  }));
-
-  // transcript 变更时同步本地编辑态。
-  // React 官方推荐的"props 变化时重置 state"做法是**在渲染期间比较并重置**，
-  // 而不是放进 effect —— 后者会造成一次多余的级联渲染（且被 lint 判为问题）。
-  const [syncedFrom, setSyncedFrom] = useState(transcript);
-  if (syncedFrom !== transcript) {
-    setSyncedFrom(transcript);
-    setSegments(transcript.segments);
-    setSpeakerMap(transcript.speaker_map || {});
-    setBaseline({
-      segments: transcript.segments,
-      speakerMap: transcript.speaker_map || {},
-    });
-    setSaveMsg('');
-    setError('');
-  }
-
-  /** 当前出现的说话人标签（按发言数降序，主要发言人排在前面） */
-  const speakers = useMemo(() => {
-    const count = new Map<string, number>();
-    segments.forEach((s) => count.set(s.speaker, (count.get(s.speaker) || 0) + 1));
-    return Array.from(count.entries())
-      .sort((a, b) => b[1] - a[1])
-      .map(([spk]) => spk);
-  }, [segments]);
+  /** 当前出现的说话人标签（按发言数降序） */
+  const speakers = useMemo(() => speakerOrder(edit.segments), [edit.segments]);
 
   const displayName = useCallback(
-    (spk: string) => speakerMap[spk] || spk,
-    [speakerMap],
+    (spk: string) => edit.names[spk] || spk,
+    [edit.names],
   );
 
-  /** 改动统计 —— 驱动底部确认栏 */
-  const changes: ChangeSummary = useMemo(() => {
-    const baseSeg = new Map(baseline.segments.map((s) => [s.id, s]));
-    let text = 0;
-    let speaker = 0;
-    for (const s of segments) {
-      const b = baseSeg.get(s.id);
-      if (!b) continue;
-      if (s.text !== b.text) text += 1;
-      if (s.speaker !== b.speaker) speaker += 1;
-    }
-    const keys = new Set([
-      ...Object.keys(baseline.speakerMap), ...Object.keys(speakerMap),
-    ]);
-    let renamed = 0;
-    keys.forEach((k) => {
-      if ((baseline.speakerMap[k] || '') !== (speakerMap[k] || '')) renamed += 1;
-    });
-    return { text, speaker, renamed };
-  }, [segments, speakerMap, baseline]);
-
-  const totalChanges = changes.text + changes.speaker + changes.renamed;
-  const dirty = totalChanges > 0;
+  const changes = useMemo(() => computeChanges(edit), [edit]);
+  const total = totalChanges(changes);
+  const dirty = total > 0;
 
   // 性能：行渲染里不能做 O(n) 查找（587 行会变成 587² 次比较）。
   // 预先建索引，渲染时 O(1)。
   const baseTextById = useMemo(() => {
     const m = new Map<string, string>();
-    baseline.segments.forEach((s) => m.set(s.id, s.text));
+    edit.baseline.forEach((s) => m.set(s.id, s.text));
     return m;
-  }, [baseline]);
+  }, [edit.baseline]);
 
   const speakerCounts = useMemo(() => {
     const m = new Map<string, number>();
-    segments.forEach((s) => m.set(s.speaker, (m.get(s.speaker) || 0) + 1));
+    edit.segments.forEach((s) => m.set(s.speaker, (m.get(s.speaker) || 0) + 1));
     return m;
-  }, [segments]);
+  }, [edit.segments]);
 
   // ── 播放：交给父级统一持有的播放器 ───────────────────────────
   const playSegment = useCallback((seg: MergedSegment) => {
     if (onPlay) onPlay(seg.recording_id, seg.local_start, seg.id);
   }, [onPlay]);
 
-  // ── 编辑 ─────────────────────────────────────────────────────
-  const updateText = (id: string, text: string) => {
-    setSegments((prev) => prev.map((s) => (s.id === id ? { ...s, text } : s)));
-    setSaveMsg('');
-  };
-
-  const updateSpeakerName = (spkId: string, name: string) => {
-    setSpeakerMap((prev) => ({ ...prev, [spkId]: name }));
-    setSaveMsg('');
-  };
-
-  /** 改判某一句的归属 */
-  const reassignSegment = (id: string, speaker: string) => {
-    setSegments((prev) => prev.map((s) => (s.id === id ? { ...s, speaker } : s)));
-    setReassignId(null);
-    setSaveMsg('');
-  };
-
-  /** 撤销全部未保存的修改 */
-  const undoAll = () => {
-    setSegments(baseline.segments);
-    setSpeakerMap(baseline.speakerMap);
-    setEditingId(null);
-    setReassignId(null);
-    setSaveMsg('');
-    setError('');
-  };
-
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     setSaving(true);
     setSaveMsg('');
     setError('');
     try {
-      const res = await api.saveTranscriptEdits(projectId, {
-        segments: segments.map((s) => ({
+      const payload = {
+        segments: edit.segments.map((s) => ({
           id: s.id, text: s.text, speaker: s.speaker,
         })),
-        speaker_map: speakerMap,
-      });
-      // 以服务端返回为准刷新基线 —— 避免本地与服务端不一致时反复"看起来还有改动"
-      const saved = res.transcript;
-      if (saved?.segments) {
-        setBaseline({
-          segments: saved.segments,
-          speakerMap: saved.speaker_map || {},
-        });
-        setSegments(saved.segments);
-        setSpeakerMap(saved.speaker_map || {});
-      } else {
-        setBaseline({ segments, speakerMap });
-      }
-      setSaveMsg(`已保存 ${res.updated} 处`);
+        speaker_map: edit.names,
+        revision: edit.revision,
+      };
+      const res = await api.saveTranscriptEdits(projectId, payload);
+      dispatch({ type: 'saved', transcript: res.transcript });
+      const c = res.changes;
+      setSaveMsg(c
+        ? `已保存 ${c.text + c.speaker + c.renamed} 处`
+        : `已保存 ${res.updated} 处`);
       setEditingId(null);
       setReassignId(null);
-      onSaved?.();
+      onSaved?.(res.transcript);
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败');
     } finally {
       setSaving(false);
     }
-  };
+  }, [projectId, edit, dispatch, onSaved]);
 
-  const handleExport = async (fmt: 'txt' | 'json') => {
+  const handleExport = useCallback(async (fmt: 'txt' | 'json') => {
+    // 有未保存内容时交给父级弹「保存并导出」，避免导出的是旧内容
+    if (dirty && onExportWithDraft) {
+      onExportWithDraft(fmt);
+      return;
+    }
     try {
       const { filename, content } = await api.exportProject(projectId, fmt);
       const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -208,14 +132,14 @@ export default function TranscriptWorkspace({
     } catch (e) {
       setError(e instanceof Error ? e.message : '导出失败');
     }
-  };
+  }, [projectId, dirty, onExportWithDraft]);
 
   return (
     <div style={S.wrap}>
       {/* ── 顶部工具条 ── */}
       <div style={S.toolbar}>
         <div style={S.toolLeft}>
-          <span style={S.stat}>{segments.length} 段</span>
+          <span style={S.stat}>{edit.segments.length} 段</span>
           <span style={S.stat}>·</span>
           <span style={S.stat}>{speakers.length} 位说话人</span>
           <span style={S.stat}>·</span>
@@ -223,6 +147,17 @@ export default function TranscriptWorkspace({
           <span style={S.recStat}>{transcript.recordings.length} 段录音</span>
         </div>
         <div style={S.toolRight}>
+          <button
+            className="btn btn-secondary"
+            style={S.smallBtn}
+            onClick={() => setShowBatch(true)}
+            disabled={speakers.length < 2}
+            title={speakers.length < 2
+              ? '只有一个说话人，无需批量改判'
+              : '把某人的全部发言改归另一人'}
+          >
+            ⇄ 批量改判
+          </button>
           <button
             className="btn btn-secondary"
             style={S.smallBtn}
@@ -260,9 +195,11 @@ export default function TranscriptWorkspace({
                   <span style={S.arrow}>→</span>
                   <input
                     style={S.spkInput}
-                    value={speakerMap[spk] ?? ''}
+                    value={edit.names[spk] ?? ''}
                     placeholder="改名…"
-                    onChange={(e) => updateSpeakerName(spk, e.target.value)}
+                    onChange={(e) => dispatch({
+                      type: 'rename', speaker: spk, name: e.target.value,
+                    })}
                   />
                   <span style={S.spkCount}>{count}</span>
                 </div>
@@ -279,14 +216,14 @@ export default function TranscriptWorkspace({
         <Virtuoso
           ref={virtuosoRef}
           style={{ height: '100%' }}
-          data={segments}
+          data={edit.segments}
           itemContent={(_i, seg) => {
             const isActive = seg.id === (activeSegId ?? null);
             const editing = editingId === seg.id;
             const reassigning = reassignId === seg.id;
             const recMeta = transcript.recordings[seg.recording_index];
             const showRecHeader = _i === 0
-              || segments[_i - 1].recording_index !== seg.recording_index;
+              || edit.segments[_i - 1].recording_index !== seg.recording_index;
             return (
               <>
                 {showRecHeader && recMeta && (
@@ -322,7 +259,12 @@ export default function TranscriptWorkspace({
                         autoFocus
                         style={S.select}
                         value={seg.speaker}
-                        onChange={(e) => reassignSegment(seg.id, e.target.value)}
+                        onChange={(e) => {
+                          dispatch({
+                            type: 'reassignOne', id: seg.id, speaker: e.target.value,
+                          });
+                          setReassignId(null);
+                        }}
                         onBlur={() => setReassignId(null)}
                       >
                         {speakers.map((spk) => (
@@ -343,7 +285,9 @@ export default function TranscriptWorkspace({
                       autoFocus
                       style={S.textarea}
                       value={seg.text}
-                      onChange={(e) => updateText(seg.id, e.target.value)}
+                      onChange={(e) => dispatch({
+                        type: 'text', id: seg.id, text: e.target.value,
+                      })}
                       onBlur={() => setEditingId(null)}
                       onKeyDown={(e) => {
                         if (e.key === 'Escape') setEditingId(null);
@@ -354,7 +298,10 @@ export default function TranscriptWorkspace({
                       style={{ ...S.text, ...(seg.text !== baseTextById.get(seg.id)
                         ? S.textEdited : {}) }}
                       onClick={() => playSegment(seg)}
-                      onDoubleClick={() => setEditingId(seg.id)}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        setEditingId(seg.id);
+                      }}
                       title="单击播放 · 双击编辑文字"
                     >
                       {seg.text}
@@ -380,17 +327,24 @@ export default function TranscriptWorkspace({
         <div style={S.changeSummary}>
           {dirty ? (
             <>
-              <span style={S.changeBadge}>待保存 {totalChanges} 处</span>
+              <span style={S.changeBadge}>待保存 {total} 处</span>
               <span style={S.changeDetail}>
                 {changes.text > 0 && <>文字 {changes.text} 段 </>}
                 {changes.speaker > 0 && <>归属 {changes.speaker} 段 </>}
                 {changes.renamed > 0 && <>说话人名 {changes.renamed} 个</>}
               </span>
+              {edit.lastBatch && (
+                <button
+                  style={S.undoBatchBtn}
+                  onClick={() => dispatch({ type: 'undoBatch' })}
+                  title={`撤销「${displayName(edit.lastBatch.to)}」的批量改判`}
+                >
+                  ↶ 撤销本次批量操作
+                </button>
+              )}
             </>
           ) : (
-            <span style={S.noChange}>
-              {saveMsg || '暂无未保存的修改'}
-            </span>
+            <span style={S.noChange}>{saveMsg || '暂无未保存的修改'}</span>
           )}
           {error && <span style={S.errorText}>{error}</span>}
         </div>
@@ -398,7 +352,7 @@ export default function TranscriptWorkspace({
           <button
             className="btn btn-secondary"
             style={S.smallBtn}
-            onClick={undoAll}
+            onClick={() => dispatch({ type: 'undoAll' })}
             disabled={!dirty || saving}
           >
             撤销全部修改
@@ -409,10 +363,20 @@ export default function TranscriptWorkspace({
             onClick={handleSave}
             disabled={!dirty || saving}
           >
-            {saving ? '保存中…' : dirty ? `确认修改（${totalChanges}）` : '已全部保存'}
+            {saving ? '保存中…' : dirty ? `确认修改（${total}）` : '已全部保存'}
           </button>
         </div>
       </div>
+
+      {showBatch && (
+        <BatchReassignDialog
+          segments={edit.segments}
+          displayName={displayName}
+          speakers={speakers}
+          onApply={(from, to) => dispatch({ type: 'reassignAll', from, to })}
+          onClose={() => setShowBatch(false)}
+        />
+      )}
     </div>
   );
 }
@@ -421,17 +385,17 @@ const S: Record<string, React.CSSProperties> = {
   wrap: { display: 'flex', flexDirection: 'column', height: '100%', background: '#fff' },
   toolbar: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    padding: '10px 18px', borderBottom: '1px solid #e6e6ee', flexShrink: 0, gap: 12,
+    padding: '10px 18px', borderBottom: '1px solid #eee', flexShrink: 0, gap: 12,
   },
   toolLeft: { display: 'flex', gap: 10, alignItems: 'center' },
   toolRight: { display: 'flex', gap: 8, alignItems: 'center' },
   stat: { fontSize: 13, color: '#555', fontWeight: 600 },
   recStat: { fontSize: 12, color: '#999', marginLeft: 4 },
-  smallBtn: { padding: '5px 12px', fontSize: 12.5 },
+  smallBtn: { padding: '5px 12px', fontSize: 12.5, borderRadius: 8 },
 
   speakerBar: {
-    padding: '10px 18px', background: '#fafbff',
-    borderBottom: '1px solid #e6e6ee', flexShrink: 0,
+    padding: '10px 18px', background: '#fafbfc',
+    borderBottom: '1px solid #eee', flexShrink: 0,
   },
   speakerBarHead: {
     display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 8,
@@ -441,7 +405,7 @@ const S: Record<string, React.CSSProperties> = {
   speakerChips: { display: 'flex', flexWrap: 'wrap', gap: 10 },
   speakerChip: {
     display: 'flex', alignItems: 'center', gap: 6,
-    background: '#fff', border: '1px solid #e2e2ee',
+    background: '#fff', border: '1px solid #e6e6ee',
     borderRadius: 8, padding: '5px 10px',
   },
   dot: { width: 10, height: 10, borderRadius: '50%', flexShrink: 0 },
@@ -451,7 +415,7 @@ const S: Record<string, React.CSSProperties> = {
   },
   arrow: { color: '#bbb', fontSize: 12 },
   spkInput: {
-    width: 110, border: '1px solid #ddd', borderRadius: 5,
+    width: 110, border: '1px solid #ddd', borderRadius: 8,
     padding: '3px 7px', fontSize: 13, outline: 'none',
   },
   spkCount: {
@@ -474,7 +438,7 @@ const S: Record<string, React.CSSProperties> = {
 
   seg: {
     display: 'flex', alignItems: 'flex-start', gap: 10,
-    padding: '7px 18px', borderBottom: '1px solid #f4f4f8',
+    padding: '7px 18px', borderBottom: '1px solid #f5f5f8',
     background: 'transparent',
   },
   segActive: { background: '#fffbe6' },
@@ -491,11 +455,11 @@ const S: Record<string, React.CSSProperties> = {
   reassignBox: {
     display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
     background: '#fff', border: '1px solid #4361ee',
-    borderRadius: 6, padding: '2px 6px',
+    borderRadius: 8, padding: '2px 6px',
   },
   reassignLabel: { fontSize: 11.5, color: '#666' },
   select: {
-    fontSize: 12.5, border: '1px solid #ddd', borderRadius: 4,
+    fontSize: 12.5, border: '1px solid #ddd', borderRadius: 6,
     padding: '1px 4px', outline: 'none', background: '#fff',
   },
   miniBtn: {
@@ -506,7 +470,7 @@ const S: Record<string, React.CSSProperties> = {
   textEdited: { background: '#fff3cd', borderRadius: 3 },
   textarea: {
     flex: 1, fontSize: 13.5, lineHeight: 1.7, color: '#333',
-    border: '1px solid #4361ee', borderRadius: 5, padding: '5px 8px',
+    border: '1px solid #4361ee', borderRadius: 8, padding: '5px 8px',
     outline: 'none', resize: 'vertical', minHeight: 52, fontFamily: 'inherit',
   },
   playBtn: {
@@ -517,7 +481,7 @@ const S: Record<string, React.CSSProperties> = {
   bottomBar: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
     gap: 12, padding: '10px 18px', flexShrink: 0,
-    borderTop: '1px solid #e6e6ee', background: '#fafafa',
+    borderTop: '1px solid #eee', background: '#fafafa',
   },
   bottomBarDirty: {
     background: '#fff8e6', borderTop: '1px solid #f0d9a0',
@@ -528,6 +492,11 @@ const S: Record<string, React.CSSProperties> = {
     background: '#ffe9b0', borderRadius: 10, padding: '2px 10px',
   },
   changeDetail: { fontSize: 12, color: '#8a6100' },
+  undoBatchBtn: {
+    fontSize: 11.5, color: '#8a6100', background: '#fff',
+    border: '1px solid #e8cf94', borderRadius: 8,
+    padding: '2px 9px', cursor: 'pointer',
+  },
   noChange: { fontSize: 12.5, color: '#999' },
   errorText: { fontSize: 12.5, color: '#d33' },
   bottomActions: { display: 'flex', gap: 8, flexShrink: 0 },

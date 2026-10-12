@@ -22,6 +22,7 @@ SUITES = [
     ("合并文档编辑（校对/改名/导出）", HERE / "test_transcript_editing.py"),
     ("边界与异常路径", HERE / "test_edge_cases.py"),
     ("证据链（防编造）", HERE / "test_evidence_chain.py"),
+    ("保存协议（修订号/并发/计数）", HERE / "test_save_protocol.py"),
 ]
 
 

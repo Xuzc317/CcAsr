@@ -93,9 +93,19 @@ export async function saveTranscriptEdits(
   payload: {
     segments: { id: string; text?: string; speaker?: string }[];
     speaker_map?: Record<string, string>;
+    /** 客户端已知的服务端修订号，用于检测"旧页面覆盖新修改" */
+    revision?: number;
   },
-): Promise<{ updated: number; transcript: MergedTranscript }> {
-  return request<{ updated: number; transcript: MergedTranscript }>(
+): Promise<{
+  updated: number;
+  transcript: MergedTranscript;
+  changes?: { text: number; speaker: number; renamed: number };
+}> {
+  return request<{
+    updated: number;
+    transcript: MergedTranscript;
+    changes?: { text: number; speaker: number; renamed: number };
+  }>(
     `${API_BASE}/projects/${projectId}/transcript`,
     {
       method: 'PATCH',

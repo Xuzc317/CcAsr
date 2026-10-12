@@ -79,6 +79,8 @@ class Project:
     # 提示词 / 参考材料
     reference_name: Optional[str] = None
     has_reference: bool = False
+    # 转录在纪要生成之后又被编辑过 —— 提示用户「纪要待更新」
+    summary_stale: bool = False
 
     @property
     def total_duration(self) -> float:
@@ -127,6 +129,7 @@ class Project:
             "summary_progress": round(self.summary_progress, 4),
             "has_summary": self.summary_state == TaskState.completed,
             "has_reference": self.has_reference,
+            "summary_stale": self.summary_stale,
         }
         if self.reference_name:
             d["reference_name"] = self.reference_name
