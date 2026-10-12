@@ -37,8 +37,11 @@ export default function MeetingListPage() {
     }
   }, []);
 
+  // 初次加载。
+  // 说明：refresh() 内部所有 setState 都在 await 之后，属异步更新、
+  // 不会造成级联渲染；这里显式用 void + 微任务避免 lint 误判为同步 setState。
   useEffect(() => {
-    refresh();
+    void Promise.resolve().then(refresh);
   }, [refresh]);
 
   // 有项目正在处理时自动轮询列表状态

@@ -26,6 +26,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.backends import get_backend
 from backend.schema import TaskState, ProjectState
@@ -425,24 +426,74 @@ async def add_recordings(
 
 
 @app.post("/api/projects/{project_id}/start")
-async def start_project_queue(project_id: str, background_tasks: BackgroundTasks):
-    """启动/继续该项目队列（用于失败重试或分批上传后统一启动）"""
+async def start_project_queue(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    retry_failed: bool = Form(default=True,
+                              description="是否把失败项重新入队后一并重试"),
+):
+    """
+    启动/继续该项目队列。
+
+    三种用途：
+      1. 分批上传后统一启动（处理 pending）
+      2. **重试失败项**（retry_failed=true 时把 failed 重置为 pending）——
+         界面上有「重试失败项」按钮，此前它必定返回 400，
+         因为这里只认 pending，而失败项停留在 failed。
+      3. 混合：既有 pending 又有 failed 时一并处理
+    """
     store = get_project_store()
     proj = _require_project(store, project_id)
-    if not any(r.state == TaskState.pending for r in proj.recordings):
-        raise HTTPException(status_code=400, detail="没有待处理的录音")
+
     if store.is_queue_running(project_id):
         raise HTTPException(status_code=409, detail="该项目队列已在运行")
+
+    retried = 0
+    if retry_failed:
+        for r in proj.recordings:
+            if r.state == TaskState.failed:
+                r.state = TaskState.pending
+                r.progress = 0.0
+                r.error = None
+                r.completed_at = None
+                retried += 1
+        if retried:
+            logger.info("[project %s] 重试失败项 %d 段", project_id, retried)
+
+    if not any(r.state == TaskState.pending for r in proj.recordings):
+        raise HTTPException(
+            status_code=400,
+            detail="没有待处理的录音" + ("（也没有失败项可重试）" if not retried else ""))
+
+    store.update_state(project_id)
     background_tasks.add_task(_run_project_queue, project_id)
-    return JSONResponse(status_code=202,
-                        content=proj.to_dict(include_recordings=False))
+    return JSONResponse(
+        status_code=202,
+        content={"project": proj.to_dict(include_recordings=False),
+                 "retried": retried})
+
+
+def _require_recording(store, project_id: str, recording_id: str):
+    """
+    校验录音**确实属于该项目**。
+
+    此前只按 recording_id 取音频，导致用 A 项目的 ID 能拿到 B 项目的录音
+    （跨项目越权）。文件本身按 MD5 全局存储，但接口应受项目归属约束。
+    """
+    proj = _require_project(store, project_id)
+    for r in proj.recordings:
+        if r.recording_id == recording_id:
+            return r
+    raise HTTPException(
+        status_code=404,
+        detail=f"Recording {recording_id} not found in project {project_id}")
 
 
 @app.get("/api/projects/{project_id}/recordings/{recording_id}/audio")
 async def get_recording_audio(project_id: str, recording_id: str):
     """获取某段录音的音频（用于回放定位到具体片段）"""
     store = get_project_store()
-    _require_project(store, project_id)
+    _require_recording(store, project_id, recording_id)
     path = get_file_store().get_file_path(recording_id)
     if path is None:
         raise HTTPException(status_code=404, detail="Audio file not found")
@@ -457,7 +508,7 @@ async def get_recording_audio(project_id: str, recording_id: str):
 async def get_recording_transcript(project_id: str, recording_id: str):
     """获取单段录音的原始转录（本地时间轴，用于单文件回放）"""
     store = get_project_store()
-    _require_project(store, project_id)
+    _require_recording(store, project_id, recording_id)
     result = store.load_recording_result(project_id, recording_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Recording result not found")
@@ -609,6 +660,10 @@ async def export_project(project_id: str, fmt: str = "md"):
                                                            ensure_ascii=False, indent=2)})
     if fmt == "txt":
         transcript = store.build_transcript(project_id)
+        # 说话人显示名：用户在「合并转录」里改过名就用显示名，
+        # 没改过则回退原始编号（SPEAKER_0）。此前忽略了 speaker_map，
+        # 导致页面上显示"张三"，导出的 TXT 却还是 SPEAKER_0。
+        speaker_map = transcript.get("speaker_map") or {}
         lines = []
         for seg in transcript.get("segments", []):
             text = (seg.get("text") or "").strip()
@@ -616,7 +671,9 @@ async def export_project(project_id: str, fmt: str = "md"):
                 continue
             s = seg.get("start", 0)
             h, m, sec = int(s // 3600), int((s % 3600) // 60), int(s % 60)
-            lines.append(f"[{h:02d}:{m:02d}:{sec:02d}] {seg.get('speaker', '')}: {text}")
+            raw_spk = seg.get("speaker", "") or ""
+            shown = (speaker_map.get(raw_spk) or "").strip() or raw_spk
+            lines.append(f"[{h:02d}:{m:02d}:{sec:02d}] {shown}: {text}")
         return JSONResponse(content={"filename": f"{safe_name}_转录.txt",
                                      "content": "\n".join(lines)})
 
@@ -624,10 +681,39 @@ async def export_project(project_id: str, fmt: str = "md"):
 
 
 # ── 静态文件服务 (前端 SPA) ──────────────────────────────────
+class _SPAStaticFiles(StaticFiles):
+    """
+    带 index.html 回退的静态文件服务。
+
+    FastAPI 的 ``StaticFiles(html=True)`` 只在**目录**请求时返回 index.html，
+    对 ``/meetings``、``/meeting/{id}`` 这类前端路由会直接 404 ——
+    表现为"站内点击能进，但刷新或直接粘贴链接就 404"。
+
+    这里在找不到文件时回退到 index.html，让前端路由接管；
+    但**只对非资源类路径**回退（排除 .js/.css/.svg 等），
+    这样丢失的静态资源仍如实返回 404，便于排查。
+    """
+
+    _ASSET_SUFFIXES = (
+        ".js", ".mjs", ".css", ".map", ".json", ".svg", ".png", ".jpg",
+        ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf",
+        ".eot", ".txt", ".xml", ".webmanifest",
+    )
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404 or path.lower().endswith(self._ASSET_SUFFIXES):
+                raise
+            # 前端路由：交给 index.html（SPA 内部会解析路径）
+            return await super().get_response("index.html", scope)
+
+
 _dist_dir = Path(__file__).parent.parent / "app" / "dist"
 if _dist_dir.is_dir():
-    app.mount("/", StaticFiles(directory=str(_dist_dir), html=True), name="static")
-    logger.info("Serving static files from: %s", _dist_dir)
+    app.mount("/", _SPAStaticFiles(directory=str(_dist_dir), html=True), name="static")
+    logger.info("Serving static files from: %s (SPA fallback enabled)", _dist_dir)
 else:
     logger.warning("Static files directory not found: %s (frontend not built yet)", _dist_dir)
 

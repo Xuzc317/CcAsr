@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
+import { useMemo, useRef, useState, useCallback } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import type { VirtuosoHandle } from 'react-virtuoso';
 import * as api from '../services/api';
@@ -9,6 +9,10 @@ interface Props {
   projectId: string;
   transcript: MergedTranscript;
   onSaved?: () => void;
+  /** 当前高亮的片段（由父级共享播放器驱动，如从纪要证据跳转过来） */
+  activeSegId?: string | null;
+  /** 请求播放某段录音的某个本地时间点（父级持有唯一的 <audio>） */
+  onPlay?: (recordingId: string, localStart: number, segId?: string) => void;
 }
 
 /**
@@ -17,8 +21,13 @@ interface Props {
  * 多段录音合并成一条**全局时间轴**；点击任一片段即切换到该片段所属的
  * 音频文件并跳转到其**本地时间**播放（跨录音边界自动换源）。
  * 支持校对文本与说话人改名，保存后写回后端。
+ *
+ * 音频播放器由父级 MeetingDetailPage 统一持有（`onPlay`），
+ * 使纪要里的「证据」跳转与这里的点击播放共用同一个播放器。
  */
-export default function TranscriptWorkspace({ projectId, transcript, onSaved }: Props) {
+export default function TranscriptWorkspace({
+  projectId, transcript, onSaved, activeSegId, onPlay,
+}: Props) {
   const [segments, setSegments] = useState<MergedSegment[]>(transcript.segments);
   const [speakerMap, setSpeakerMap] = useState<Record<string, string>>(
     transcript.speaker_map || {},
@@ -27,17 +36,19 @@ export default function TranscriptWorkspace({ projectId, transcript, onSaved }: 
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [currentRec, setCurrentRec] = useState<string | null>(null);
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const audioRef = useRef<HTMLAudioElement>(null);
 
-  useEffect(() => {
+  // transcript 变更时同步本地编辑态。
+  // React 官方推荐的"props 变化时重置 state"做法是**在渲染期间比较并重置**，
+  // 而不是放进 effect —— 后者会造成一次多余的级联渲染（且被 lint 判为问题）。
+  const [syncedFrom, setSyncedFrom] = useState(transcript);
+  if (syncedFrom !== transcript) {
+    setSyncedFrom(transcript);
     setSegments(transcript.segments);
     setSpeakerMap(transcript.speaker_map || {});
     setDirty(false);
-  }, [transcript]);
+  }
 
   const speakers = useMemo(() => {
     const set = new Set<string>();
@@ -50,27 +61,12 @@ export default function TranscriptWorkspace({ projectId, transcript, onSaved }: 
     [speakerMap],
   );
 
-  // ── 播放：跨录音换源 ─────────────────────────────────────────
+  // ── 播放：交给父级统一持有的播放器 ───────────────────────────
   const playSegment = useCallback((seg: MergedSegment) => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    setActiveId(seg.id);
-
-    if (currentRec !== seg.recording_id) {
-      setCurrentRec(seg.recording_id);
-      audio.src = api.recordingAudioUrl(projectId, seg.recording_id);
-      const onLoaded = () => {
-        audio.currentTime = seg.local_start;
-        audio.play().catch(() => { /* 用户未交互时忽略 */ });
-        audio.removeEventListener('loadedmetadata', onLoaded);
-      };
-      audio.addEventListener('loadedmetadata', onLoaded);
-      audio.load();
-    } else {
-      audio.currentTime = seg.local_start;
-      audio.play().catch(() => { /* 忽略自动播放限制 */ });
+    if (onPlay) {
+      onPlay(seg.recording_id, seg.local_start, seg.id);
     }
-  }, [currentRec, projectId]);
+  }, [onPlay]);
 
   // ── 编辑 ─────────────────────────────────────────────────────
   const updateText = (id: string, text: string) => {
@@ -110,21 +106,6 @@ export default function TranscriptWorkspace({ projectId, transcript, onSaved }: 
       setSaveMsg(e instanceof Error ? e.message : '导出失败');
     }
   };
-
-  // ── 键盘：空格播放当前片段 ───────────────────────────────────
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && (e.target as HTMLElement)?.tagName !== 'INPUT'
-          && (e.target as HTMLElement)?.tagName !== 'TEXTAREA') {
-        e.preventDefault();
-        const a = audioRef.current;
-        if (!a) return;
-        if (a.paused) a.play().catch(() => {}); else a.pause();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
 
   return (
     <div style={S.wrap}>
@@ -183,15 +164,7 @@ export default function TranscriptWorkspace({ projectId, transcript, onSaved }: 
         ))}
       </div>
 
-      {/* 音频播放器（跨录音切换音源） */}
-      <div style={S.playerBar}>
-        <audio ref={audioRef} controls style={{ width: '100%', height: 36 }} />
-        {currentRec && (
-          <span style={S.nowPlaying}>
-            当前：{transcript.recordings.find((r) => r.recording_id === currentRec)?.filename}
-          </span>
-        )}
-      </div>
+      {/* 音频播放器由父级 MeetingDetailPage 统一渲染（与纪要证据跳转共用） */}
 
       {/* 片段列表 */}
       <div style={S.listWrap}>
@@ -200,7 +173,7 @@ export default function TranscriptWorkspace({ projectId, transcript, onSaved }: 
           style={{ height: '100%' }}
           data={segments}
           itemContent={(_i, seg) => {
-            const isActive = seg.id === activeId;
+            const isActive = seg.id === (activeSegId ?? null);
             const editing = editingId === seg.id;
             const recMeta = transcript.recordings[seg.recording_index];
             const showRecHeader = _i === 0
@@ -218,7 +191,7 @@ export default function TranscriptWorkspace({ projectId, transcript, onSaved }: 
                 )}
                 <div
                   style={{ ...S.seg, ...(isActive ? S.segActive : {}) }}
-                  onClick={() => setActiveId(seg.id)}
+                  onClick={() => playSegment(seg)}
                 >
                   <span style={S.time}>{formatTime(seg.start)}</span>
                   <span

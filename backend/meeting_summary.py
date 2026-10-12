@@ -95,6 +95,11 @@ blocks 数组中每个元素的 type 必须是以下之一，并带对应字段�
 - 根据内容的逻辑结构选择最合适的块类型：并列议题用 columns，对比用 table，
   时间密集用 timeline，推进步骤用 steps，其余用 bullets
 - blocks 数量控制在 3-8 个，不要事无巨细
+
+**证据链（重要）**：每个 block 都应附带 "source_refs"，指出该结论依据的会议时间点，
+格式为 [{"time":"HH:MM:SS"}, ...]，最多 3 个，按重要性排序。
+时间必须**严格取自上面转录中方括号里的时间**，不要自己推算或编造。
+若某结论确实无法对应到具体时间，该 block 可省略 source_refs。
 """
 
 
@@ -171,8 +176,117 @@ def _extract_json(raw: str) -> Optional[dict]:
     return None
 
 
-def _normalize_blocks(blocks) -> list[dict]:
-    """校验并清洗 blocks：丢弃未知类型与缺字段的块，保证前端不会崩。"""
+def _norm_time_hint(hint) -> Optional[float]:
+    """
+    把 LLM 给的时间提示归一化成秒数。
+
+    接受形式：数字（秒）、"MM:SS"、"HH:MM:SS"、"MM:SS.mmm"。
+    无法解析时返回 None。
+    """
+    if hint is None:
+        return None
+    if isinstance(hint, (int, float)):
+        return float(hint) if hint >= 0 else None
+    s = str(hint).strip()
+    if not s:
+        return None
+    m = re.fullmatch(r"(\d+):(\d{1,2})(?::(\d{1,2}))?(?:\.(\d+))?", s)
+    if not m:
+        # 退一步：纯数字字符串
+        try:
+            v = float(s)
+            return v if v >= 0 else None
+        except ValueError:
+            return None
+    parts = [int(x) for x in m.groups()[:3] if x is not None]
+    if len(parts) == 2:          # MM:SS
+        return parts[0] * 60 + parts[1]
+    return parts[0] * 3600 + parts[1] * 60 + parts[2]   # HH:MM:SS
+
+
+def _resolve_source_refs(
+    hints,
+    segments: list[dict],
+    max_refs: int = 3,
+    tolerance_s: float = 6.0,
+) -> list[dict]:
+    """
+    把 LLM 给的时间提示解析成**经过校验的**证据引用。
+
+    为什么必须校验：LLM 可能编造时间戳。这里只在转录里真的存在
+    足够接近的片段时才生成证据，宁可没有证据，也不给假证据。
+
+    Args:
+        hints: LLM 输出的 source_refs/moments，元素为
+               {"time": "MM:SS"} 或 {"start": 秒} 或纯时间字符串
+        segments: 合并转录的 segments（含 start/end/speaker/text/recording_*）
+        max_refs: 每个 block 最多保留几条证据
+        tolerance_s: 与真实片段起点的最大允许偏差
+
+    Returns:
+        [{"start","end","recording_id","recording_index","quote"}, ...]
+    """
+    if not hints or not segments:
+        return []
+
+    # 预排序以便二分查找
+    starts = [float(s.get("start", 0.0)) for s in segments]
+    out: list[dict] = []
+
+    for h in hints if isinstance(hints, list) else []:
+        if isinstance(h, (str, int, float)):
+            t = _norm_time_hint(h)
+        elif isinstance(h, dict):
+            t = _norm_time_hint(
+                h.get("time", h.get("start", h.get("at", h.get("timestamp")))))
+        else:
+            continue
+        if t is None:
+            continue
+
+        # 找最近的片段起点
+        import bisect
+        i = bisect.bisect_left(starts, t)
+        cand = [j for j in (i - 1, i) if 0 <= j < len(segments)]
+        if not cand:
+            continue
+        j = min(cand, key=lambda k: abs(starts[k] - t))
+        seg = segments[j]
+        if abs(float(seg.get("start", 0.0)) - t) > tolerance_s:
+            continue        # 偏差过大：大概率是编的，丢弃
+
+        out.append({
+            "start": round(float(seg.get("start", 0.0)), 2),
+            "end": round(float(seg.get("end", 0.0)), 2),
+            "recording_id": seg.get("recording_id"),
+            "recording_index": seg.get("recording_index"),
+            "quote": (seg.get("text") or "")[:80],
+        })
+        if len(out) >= max_refs:
+            break
+
+    # 去重（同一片段只留一条）
+    seen = set()
+    uniq = []
+    for r in out:
+        k = r["start"]
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(r)
+    return uniq
+
+
+def _normalize_blocks(blocks, segments: Optional[list[dict]] = None) -> list[dict]:
+    """
+    校验并清洗 blocks：丢弃未知类型与缺字段的块，保证前端不会崩。
+
+    Args:
+        blocks: LLM 返回的 blocks
+        segments: 合并转录的 segments；传入时会把 LLM 给的时间提示
+                  解析成**经过校验的** ``source_refs``（证据链）。
+                  校验不通过的时间点会被丢弃 —— 宁可没有证据也不给假证据。
+    """
     out = []
     if not isinstance(blocks, list):
         return out
@@ -186,62 +300,78 @@ def _normalize_blocks(blocks) -> list[dict]:
             continue
         title = b.get("title") or ""
 
+        # 证据链：优先用 LLM 明确给的，否则退化用块内的时间标注
+        ref_hints = (b.get("source_refs") or b.get("moments")
+                     or b.get("evidence") or b.get("refs"))
+        if not ref_hints:
+            if btype == "timeline":
+                ref_hints = [i.get("time") for i in (b.get("items") or [])
+                             if isinstance(i, dict) and i.get("time")]
+
+        def _mk(d: dict) -> dict:
+            """附加证据引用（若解析成功）"""
+            if segments and ref_hints:
+                refs = _resolve_source_refs(ref_hints, segments)
+                if refs:
+                    d["source_refs"] = refs
+            return d
+
         if btype == "summary":
             if not b.get("text"):
                 continue
-            out.append({"type": "summary", "title": title, "text": str(b["text"])})
+            out.append(_mk({"type": "summary", "title": title, "text": str(b["text"])}))
         elif btype == "columns":
             items = [i for i in (b.get("items") or []) if isinstance(i, dict)
                      and (i.get("heading") or i.get("points"))]
             if not items:
                 continue
-            out.append({"type": "columns", "title": title, "items": [
+            out.append(_mk({"type": "columns", "title": title, "items": [
                 {"icon": i.get("icon") or "", "heading": i.get("heading") or "",
                  "points": [str(p) for p in (i.get("points") or [])]}
                 for i in items
-            ]})
+            ]}))
         elif btype == "table":
             rows = [r for r in (b.get("rows") or []) if isinstance(r, list)]
             if not rows or not b.get("headers"):
                 continue
-            out.append({"type": "table", "title": title,
-                        "headers": [str(h) for h in b["headers"]],
-                        "rows": [[str(c) for c in r] for r in rows]})
+            out.append(_mk({"type": "table", "title": title,
+                            "headers": [str(h) for h in b["headers"]],
+                            "rows": [[str(c) for c in r] for r in rows]}))
         elif btype == "timeline":
             items = [i for i in (b.get("items") or [])
                      if isinstance(i, dict) and i.get("text")]
             if not items:
                 continue
-            out.append({"type": "timeline", "title": title, "items": [
+            out.append(_mk({"type": "timeline", "title": title, "items": [
                 {"time": str(i.get("time") or ""), "text": str(i["text"])}
                 for i in items
-            ]})
+            ]}))
         elif btype == "steps":
             items = [i for i in (b.get("items") or [])
                      if isinstance(i, dict) and (i.get("heading") or i.get("text"))]
             if not items:
                 continue
-            out.append({"type": "steps", "title": title, "items": [
+            out.append(_mk({"type": "steps", "title": title, "items": [
                 {"heading": str(i.get("heading") or ""), "text": str(i.get("text") or "")}
                 for i in items
-            ]})
+            ]}))
         elif btype == "todo":
             rows = [r for r in (b.get("rows") or []) if isinstance(r, list)]
             if not rows:
                 continue
-            out.append({"type": "todo", "title": title or "待办事项",
-                        "headers": [str(h) for h in (b.get("headers")
-                                                     or ["事项", "责任人", "截止时间"])],
-                        "rows": [[str(c) for c in r] for r in rows]})
+            out.append(_mk({"type": "todo", "title": title or "待办事项",
+                            "headers": [str(h) for h in (b.get("headers")
+                                                         or ["事项", "责任人", "截止时间"])],
+                            "rows": [[str(c) for c in r] for r in rows]}))
         elif btype == "bullets":
             pts = [str(p) for p in (b.get("points") or []) if str(p).strip()]
             if not pts:
                 continue
-            out.append({"type": "bullets", "title": title, "points": pts})
+            out.append(_mk({"type": "bullets", "title": title, "points": pts}))
         elif btype == "text":
             if not (b.get("text") or "").strip():
                 continue
-            out.append({"type": "text", "title": title, "text": str(b["text"])})
+            out.append(_mk({"type": "text", "title": title, "text": str(b["text"])}))
 
     return out
 
@@ -279,6 +409,9 @@ def _to_markdown(data: dict) -> str:
 
     for b in data.get("blocks") or []:
         t = b.get("type")
+        # 待办表格统一由函数末尾的 ``todos`` 段渲染一次，避免重复
+        if t == "todo":
+            continue
         if b.get("title"):
             lines += [f"## {b['title']}", ""]
 
@@ -292,7 +425,7 @@ def _to_markdown(data: dict) -> str:
                 for p in item.get("points") or []:
                     lines.append(f"- {p}")
                 lines.append("")
-        elif t in ("table", "todo"):
+        elif t == "table":
             headers = b.get("headers") or []
             rows = b.get("rows") or []
             if headers:
@@ -316,7 +449,17 @@ def _to_markdown(data: dict) -> str:
         elif t == "text":
             lines += [str(b.get("text", "")), ""]
 
+    # 待办只在此处渲染一次（上面的 block 循环已跳过 todo 类型）
     todos = data.get("todos") or []
+    if not todos:
+        # 兼容：todos 为空但存在 todo block 时，从 block 还原
+        for b in data.get("blocks") or []:
+            if b.get("type") == "todo" and b.get("rows"):
+                todos = [{"task": r[0] if len(r) > 0 else "",
+                          "owner": r[1] if len(r) > 1 else "",
+                          "due": r[2] if len(r) > 2 else ""}
+                         for r in b["rows"]]
+                break
     if todos:
         lines += ["## 待办事项", "", "| 事项 | 责任人 | 截止时间 |", "|---|---|---|"]
         for t in todos:
@@ -475,7 +618,9 @@ def generate_meeting_summary(
 
     report(0.85, "正在整理结构化结果…")
 
-    blocks = _normalize_blocks(data.get("blocks"))
+    # 传入 segments 以构建证据链（把 LLM 的时间提示解析为经过校验的 source_refs）
+    blocks = _normalize_blocks(data.get("blocks"),
+                               segments=transcript.get("segments") or [])
     todos = _normalize_todos(data.get("todos"))
 
     # 待办也作为一个 block 渲染，保持前端渲染路径统一

@@ -21,6 +21,7 @@ SUITES = [
     ("纪要全链路（自包含，无需 key）", HERE / "test_summary_e2e_selfcontained.py"),
     ("合并文档编辑（校对/改名/导出）", HERE / "test_transcript_editing.py"),
     ("边界与异常路径", HERE / "test_edge_cases.py"),
+    ("证据链（防编造）", HERE / "test_evidence_chain.py"),
 ]
 
 

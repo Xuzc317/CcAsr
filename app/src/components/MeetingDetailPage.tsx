@@ -36,6 +36,54 @@ export default function MeetingDetailPage() {
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ── 共享音频播放器 ───────────────────────────────────────────
+  // 提到本层，使「会议纪要」的证据跳转与「合并转录」的点击播放共用同一个
+  // <audio>，避免两处各持一个播放器导致状态互相打架。
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [currentRec, setCurrentRec] = useState<string | null>(null);
+  const [activeSegId, setActiveSegId] = useState<string | null>(null);
+
+  /** 播放指定录音的某个本地时间点（跨录音自动换源） */
+  const playAt = useCallback((
+    recordingId: string, localStart: number, segId?: string,
+  ) => {
+    const audio = audioRef.current;
+    if (!audio || !projectId) return;
+    setActiveSegId(segId ?? null);
+    if (currentRec !== recordingId) {
+      setCurrentRec(recordingId);
+      audio.src = api.recordingAudioUrl(projectId, recordingId);
+      const onLoaded = () => {
+        audio.currentTime = localStart;
+        audio.play().catch(() => { /* 未交互时忽略 */ });
+        audio.removeEventListener('loadedmetadata', onLoaded);
+      };
+      audio.addEventListener('loadedmetadata', onLoaded);
+      audio.load();
+    } else {
+      audio.currentTime = localStart;
+      audio.play().catch(() => { /* 忽略自动播放限制 */ });
+    }
+  }, [currentRec, projectId]);
+
+  /** 纪要里的证据引用 → 跳到对应录音位置 */
+  const handleJumpToRef = useCallback((ref: {
+    start: number; recording_id?: string; recording_index?: number;
+  }) => {
+    // 优先用 recording_id；否则按 recording_index 从 transcript 里找
+    let rid = ref.recording_id;
+    let localStart = ref.start;
+    const meta = transcript?.recordings?.find(
+      (r) => r.recording_id === rid || r.order === ref.recording_index);
+    if (meta) {
+      rid = meta.recording_id;
+      localStart = ref.start - meta.offset;   // 全局时间 → 该录音本地时间
+    }
+    if (!rid || localStart < 0) return;
+    playAt(rid, localStart);
+    setTab('transcript');       // 切到转录视图，便于看到上下文
+  }, [playAt, transcript]);
+
   // ── 加载项目 ─────────────────────────────────────────────────
   const loadProject = useCallback(async () => {
     if (!projectId) return;
@@ -49,7 +97,8 @@ export default function MeetingDetailPage() {
     }
   }, [projectId]);
 
-  useEffect(() => { loadProject(); }, [loadProject]);
+  // 初次加载（loadProject 内部 setState 均在 await 之后，属异步更新）
+  useEffect(() => { void Promise.resolve().then(loadProject); }, [loadProject]);
 
   // ── 轮询：队列运行或纪要生成中 ───────────────────────────────
   const busy = !!project && (
@@ -79,16 +128,20 @@ export default function MeetingDetailPage() {
   }, [projectId]);
 
   useEffect(() => {
-    if (tab === 'transcript' && !transcript) loadTranscript();
-    if (tab === 'summary') loadSummary();
+    // loadTranscript/loadSummary 内部 setState 均在 await 之后
+    void Promise.resolve().then(() => {
+      if (tab === 'transcript' && !transcript) loadTranscript();
+      if (tab === 'summary') loadSummary();
+    });
   }, [tab, transcript, loadTranscript, loadSummary]);
 
   // 转录完成后自动刷新转录与纪要
   useEffect(() => {
-    if (!busy && project?.recording_count) {
+    if (busy || !project?.recording_count) return;
+    void Promise.resolve().then(() => {
       loadSummary();
       if (tab === 'transcript') loadTranscript();
-    }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
 
@@ -301,6 +354,18 @@ export default function MeetingDetailPage() {
         ))}
       </div>
 
+      {/* 共享播放器：纪要证据跳转与转录点击播放共用同一个 <audio> */}
+      <div style={S.playerBar}>
+        <audio ref={audioRef} controls style={{ width: '100%', height: 34 }} />
+        {currentRec && (
+          <span style={S.nowPlaying}>
+            当前：{project.recordings?.find((r) => r.recording_id === currentRec)?.filename
+              ?? transcript?.recordings.find((r) => r.recording_id === currentRec)?.filename
+              ?? '—'}
+          </span>
+        )}
+      </div>
+
       <div style={S.tabBody}>
         {tab === 'summary' && (
           <SummaryPanel
@@ -309,6 +374,7 @@ export default function MeetingDetailPage() {
             structured={structured}
             onRegenerate={handleRegenerate}
             onReference={handleReference}
+            onJumpTo={handleJumpToRef}
           />
         )}
 
@@ -319,6 +385,8 @@ export default function MeetingDetailPage() {
                 projectId={project.project_id}
                 transcript={transcript}
                 onSaved={loadSummary}
+                activeSegId={activeSegId}
+                onPlay={playAt}
               />
             </div>
           ) : (
@@ -368,13 +436,14 @@ export default function MeetingDetailPage() {
 // ── 纪要面板 ─────────────────────────────────────────────────
 
 function SummaryPanel({
-  project, raw, structured, onRegenerate, onReference,
+  project, raw, structured, onRegenerate, onReference, onJumpTo,
 }: {
   project: Project;
   raw: string | null;
   structured: ReturnType<typeof api.parseStructuredSummary>;
   onRegenerate: () => void;
   onReference: (f: File) => void;
+  onJumpTo?: (ref: { start: number; recording_id?: string; recording_index?: number }) => void;
 }) {
   const refInput = useRef<HTMLInputElement>(null);
 
@@ -428,7 +497,7 @@ function SummaryPanel({
         </button>
       </div>
       {structured
-        ? <SummaryView data={structured} />
+        ? <SummaryView data={structured} onJumpTo={onJumpTo} />
         : <pre style={S.mdFallback}>{raw}</pre>}
     </div>
   );
@@ -459,6 +528,11 @@ const S: Record<string, React.CSSProperties> = {
   title: { fontSize: 20, fontWeight: 700, color: '#1a1a2e', cursor: 'pointer' },
   headerMeta: { fontSize: 12.5, color: '#888' },
   sm: { padding: '5px 12px', fontSize: 12.5 },
+  playerBar: {
+    display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0,
+    padding: '6px 0 10px', borderBottom: '1px solid #e6e6ee', marginBottom: 8,
+  },
+  nowPlaying: { fontSize: 12, color: '#888', whiteSpace: 'nowrap' },
   error: {
     padding: '10px 14px', background: '#fff0f0', border: '1px solid #ffcccc',
     borderRadius: 8, color: '#cc3333', fontSize: 13, marginBottom: 12,

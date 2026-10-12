@@ -32,6 +32,11 @@ whisper = [
     "av>=11,<19",
 ]
 
+# 质量度量 / 内存采集（/health 的 rss_mb 在 Windows 上依赖它）
+metrics = [
+    "psutil>=5.9",
+]
+
 [tool.uv]
 # CPU-only PyTorch (轻量安装，适用于无 GPU 或 macOS MPS)
 # 如需 CUDA 加速 (Windows/Linux NVIDIA GPU)，安装后手动替换：

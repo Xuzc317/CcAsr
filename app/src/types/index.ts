@@ -116,15 +116,24 @@ export interface StepItem {
   text: string;
 }
 
+/** 纪要中的一条原声证据（指回转录片段） */
+export interface SourceRef {
+  start: number;              // 全局时间（秒）
+  end?: number;
+  recording_id?: string;
+  recording_index?: number;
+  quote?: string;             // 对应转录文本片段
+}
+
 export type SummaryBlock =
-  | { type: 'summary'; title?: string; text: string }
-  | { type: 'columns'; title?: string; items: ColumnItem[] }
-  | { type: 'table'; title?: string; headers: string[]; rows: string[][] }
-  | { type: 'timeline'; title?: string; items: TimelineItem[] }
-  | { type: 'steps'; title?: string; items: StepItem[] }
-  | { type: 'todo'; title?: string; headers: string[]; rows: string[][] }
-  | { type: 'bullets'; title?: string; points: string[] }
-  | { type: 'text'; title?: string; text: string };
+  | { type: 'summary'; title?: string; text: string; source_refs?: SourceRef[] }
+  | { type: 'columns'; title?: string; items: ColumnItem[]; source_refs?: SourceRef[] }
+  | { type: 'table'; title?: string; headers: string[]; rows: string[][]; source_refs?: SourceRef[] }
+  | { type: 'timeline'; title?: string; items: TimelineItem[]; source_refs?: SourceRef[] }
+  | { type: 'steps'; title?: string; items: StepItem[]; source_refs?: SourceRef[] }
+  | { type: 'todo'; title?: string; headers: string[]; rows: string[][]; source_refs?: SourceRef[] }
+  | { type: 'bullets'; title?: string; points: string[]; source_refs?: SourceRef[] }
+  | { type: 'text'; title?: string; text: string; source_refs?: SourceRef[] };
 
 export interface StructuredSummary {
   title: string;

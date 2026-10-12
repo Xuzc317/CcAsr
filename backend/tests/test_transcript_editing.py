@@ -164,7 +164,13 @@ check("导出 txt 200", r.status_code == 200, r.status_code)
 if r.status_code == 200:
     content = r.json()["content"]
     check("导出含校对后的文本", "校对后的文本" in content)
-    check("导出含改后的说话人", "SPEAKER_9" in content, content[:120])
+    # 关键：导出必须用 speaker_map 里的**显示名**，而不是原始编号。
+    # 此前只断言编号变化，漏掉了"改名后导出仍是 SPEAKER_x"的真实缺陷（QA 报告 B02）。
+    check("导出使用说话人显示名（李四）", "李四" in content, content[:160])
+    check("导出不应再出现被改名的原始编号",
+          "SPEAKER_9" not in content, content[:160])
+    # 未改名的说话人应回退原始编号，而非空白
+    check("未改名的说话人回退原始编号", "SPEAKER_1" in content, content[:200])
 
 print("\n=== 6. 不存在的项目应 404 ===")
 check("PATCH 不存在项目 -> 404",
