@@ -171,9 +171,28 @@ def _run_project_queue(project_id: str) -> None:
         logger.warning("[project %s] 队列启动时项目已不存在", project_id)
         return
 
+    store.set_queue_running(project_id, True)
+    store.update_state(project_id)
     logger.info("[project %s] 开始串行转录队列（共 %d 段）",
                 project_id, len(proj.recordings))
 
+    try:
+        # 阶段 1：逐段串行转录
+        _transcribe_pending(store, project_id)
+
+        # 阶段 2：统一说话人 → 合并文档 → 自动纪要
+        # （放在 try 内，期间一直保持"队列运行中"，避免中途被追加录音）
+        _finalize_project(store, project_id)
+    except Exception:
+        logger.exception("[project %s] 队列处理异常", project_id)
+    finally:
+        # 无论成功失败都要清掉标志，否则项目会被 409 永久锁死
+        store.set_queue_running(project_id, False)
+        store.update_state(project_id)
+
+
+def _transcribe_pending(store, project_id: str) -> None:
+    """逐段处理 pending 录音（串行，按 order 顺序）。"""
     while True:
         rec = store.next_pending(project_id)
         if rec is None:
@@ -223,7 +242,9 @@ def _run_project_queue(project_id: str) -> None:
 
         store.update_state(project_id)
 
-    # ── 队列结束：统一说话人 → 合并文档 → 自动纪要 ──
+
+def _finalize_project(store, project_id: str) -> None:
+    """队列结束后：跨录音统一说话人 → 合并文档 → 自动会议纪要。"""
     try:
         store.unify_speakers(project_id)
     except Exception:
@@ -237,7 +258,6 @@ def _run_project_queue(project_id: str) -> None:
                     transcript["num_speakers"], transcript["duration"])
     except Exception:
         logger.exception("[project %s] 合并文档生成失败", project_id)
-        store.update_state(project_id)
         return
 
     try:
@@ -248,8 +268,6 @@ def _run_project_queue(project_id: str) -> None:
         if p:
             p.summary_state = TaskState.failed
             p.summary_error = str(e)
-    finally:
-        store.update_state(project_id)
 
 
 def _run_project_summary(project_id: str) -> None:
@@ -371,7 +389,10 @@ async def add_recordings(
     proj = _require_project(store, project_id)
     if not files:
         raise HTTPException(status_code=400, detail="未收到任何音频文件")
-    if proj.state in (ProjectState.transcribing, ProjectState.summarizing):
+    # 仅在**队列确实在跑**时拒绝，而不是"有 pending 录音"就拒绝 ——
+    # 否则分批上传（start=false）会把自己挡死
+    if proj.state in (ProjectState.transcribing, ProjectState.summarizing) \
+            and store.is_queue_running(project_id):
         raise HTTPException(status_code=409,
                             detail="该项目队列正在运行，请等待完成后再添加")
 
@@ -410,6 +431,8 @@ async def start_project_queue(project_id: str, background_tasks: BackgroundTasks
     proj = _require_project(store, project_id)
     if not any(r.state == TaskState.pending for r in proj.recordings):
         raise HTTPException(status_code=400, detail="没有待处理的录音")
+    if store.is_queue_running(project_id):
+        raise HTTPException(status_code=409, detail="该项目队列已在运行")
     background_tasks.add_task(_run_project_queue, project_id)
     return JSONResponse(status_code=202,
                         content=proj.to_dict(include_recordings=False))

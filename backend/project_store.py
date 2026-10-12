@@ -59,6 +59,8 @@ class ProjectStore:
         # 项目级锁：保证同一项目的队列串行执行
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+        # 正在运行队列的项目集合（进程内状态，不持久化）
+        self._queue_running: set[str] = set()
 
         self._load()
 
@@ -265,21 +267,43 @@ class ProjectStore:
 
     # ── 队列状态 ──────────────────────────────────────────────
 
+    def set_queue_running(self, project_id: str, running: bool) -> None:
+        """
+        标记该项目是否有队列 worker 正在运行。
+
+        ``Project.state == transcribing`` 的语义是**「队列正在跑」**，
+        而不是「有录音还没转录完」。二者必须区分：
+        分批上传（``start=false``）时会留下 pending 录音但并没有队列在跑，
+        若把它当成"队列运行中"，后续上传就会被 409 挡掉，且提示信息误导。
+        """
+        proj = self._projects.get(project_id)
+        if not proj:
+            return
+        self._queue_running.add(project_id) if running else self._queue_running.discard(project_id)
+
+    def is_queue_running(self, project_id: str) -> bool:
+        return project_id in self._queue_running
+
     def update_state(self, project_id: str) -> None:
-        """依据各录音状态推导项目状态并落盘"""
+        """依据各录音状态与队列运行标志推导项目状态并落盘"""
         proj = self._projects.get(project_id)
         if not proj:
             return
         proj.updated_at = _now()
+        running = project_id in self._queue_running
 
-        if not proj.all_finished:
+        if not proj.recordings:
+            proj.state = ProjectState.draft
+        elif running or any(r.state == TaskState.processing for r in proj.recordings):
+            # 真的在处理：队列在跑，或已有录音进入 processing
             proj.state = ProjectState.transcribing
+        elif not proj.all_finished:
+            # 有 pending 录音但没有队列在跑（分批上传后尚未启动）
+            proj.state = ProjectState.draft
         elif proj.summary_state == TaskState.processing:
             proj.state = ProjectState.summarizing
         elif all(r.state == TaskState.failed for r in proj.recordings):
             proj.state = ProjectState.failed
-        elif proj.summary_state == TaskState.completed:
-            proj.state = ProjectState.completed
         else:
             # 转录完成、总结尚未开始/失败
             proj.state = ProjectState.completed
