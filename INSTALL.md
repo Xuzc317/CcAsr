@@ -1,242 +1,189 @@
-﻿# CcAsr 瀹夎璇存槑
+# 安装与部署
 
-## 鐜瑕佹眰
+[返回首页](README.md) · [使用指南](docs/USAGE.md) · [API 参考](docs/API.md)
 
-| 渚濊禆 | 鐗堟湰瑕佹眰 | 鐢ㄩ€?|
-|------|----------|------|
-| Python | 3.12+ | 鍚庣杩愯鏃?|
-| Node.js | 20+ (LTS) | 鍓嶇鏋勫缓锛堣嚜甯?npm锛?|
-| uv | 鏈€鏂扮増 | Python 渚濊禆绠＄悊 |
-| ffmpeg | 鏈€鏂扮増 | 闊抽鏍煎紡杞爜 |
+## 环境要求
 
-> 鍓嶇鍖呯鐞嗗櫒鐢?**npm**锛圢ode.js 鑷甫锛屾棤闇€棰濆瀹夎锛夈€?
-> 浠撳簱鍐呴攣瀹氭枃浠朵负 `app/package-lock.json`銆?
+| 工具 | 要求 | 用途 |
+| :--- | :--- | :--- |
+| Python | 3.12+；仓库默认 3.12 | 后端与语音模型 |
+| Node.js | 推荐 22.12+；Vite 8 也支持 20.19+ | 前端安装与构建 |
+| uv | 可用的当前版本 | Python 依赖与虚拟环境 |
+| ffmpeg | 可执行文件加入 PATH | 音频解码与转换 |
+| Git | 可访问本仓库 | 获取代码 |
 
-**GPU 鍔犻€燂紙鍙€夛級锛?*
+CPU 可以运行默认识别链路。CUDA 与 Apple Silicon MPS 为可选加速，取决于 PyTorch 安装和设备支持。
 
-| 骞冲彴 | GPU | 璇存槑 |
-|------|-----|------|
-| macOS (Apple Silicon) | MPS | 鑷姩妫€娴嬶紝鏃犻渶棰濆閰嶇疆 |
-| Windows/Linux (NVIDIA) | CUDA | 闇€瀹夎 CUDA 鐗?PyTorch锛堣涓嬫柟锛?|
+安装入口：[Python](https://www.python.org/downloads/)、[Node.js](https://nodejs.org/en/download)、[uv](https://docs.astral.sh/uv/getting-started/installation/)、[ffmpeg](https://ffmpeg.org/download.html)。
 
-## 1. 瀹夎鍩虹宸ュ叿
-
-### Windows
-
-```powershell
-# ffmpeg锛堜换閫夊叾涓€锛?
-winget install Gyan.FFmpeg
-# 鎴?scoop install ffmpeg / choco install ffmpeg
-
-# uv锛圥ython 渚濊禆绠＄悊锛?
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-# Node.js锛堣嚜甯?npm锛屾棤闇€棰濆瀹夎锛?
-winget install OpenJS.NodeJS.LTS
-```
-
-### macOS锛圚omebrew锛?
+## 1. 获取代码与安装后端
 
 ```bash
-# Homebrew锛堝鏈畨瑁咃級
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# ffmpeg
-brew install ffmpeg
-
-# uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source ~/.zshrc   # 閲嶆柊鍔犺浇 shell
-
-# nvm + Node.js锛坣pm 闅忎箣瀹夎锛?
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-source ~/.zshrc
-nvm install --lts
-nvm use --lts
-```
-
-## 2. 鑾峰彇浠ｇ爜
-
-```bash
-git clone git@github.com:Xuzc317/ASR.git CcAsr
+git clone https://github.com/Xuzc317/ASR.git CcAsr
 cd CcAsr
-```
-
-## 3. 鍚庣瀹夎
-
-```bash
 uv sync
 ```
 
-uv 浼氳嚜鍔ㄥ垱寤?`.venv` 骞跺畨瑁?Python 3.12 + 鎵€鏈変緷璧栥€?
+私有仓库需要有访问权限的 GitHub 账号认证。已配置 SSH 时也可使用 `git@github.com:Xuzc317/ASR.git`。
 
-楠岃瘉 GPU锛?
+uv 创建 `.venv` 并安装依赖。首次转录下载 SenseVoice、VAD 与声纹模型；之后使用本地缓存。
+
+<details>
+<summary>使用已有 Python 环境与 pip</summary>
+
+确保 Python 3.12+，创建虚拟环境：
 
 ```bash
-# Windows
-.venv\Scripts\python.exe -c "import torch; print('CUDA:', torch.cuda.is_available())"
-# macOS / Linux
-.venv/bin/python -c "import torch; print('CUDA:', torch.cuda.is_available(), 'MPS:', hasattr(torch.backends,'mps') and torch.backends.mps.is_available())"
+python -m venv .venv
 ```
 
-### Windows + NVIDIA GPU锛圕UDA 鍔犻€燂級
+Windows PowerShell 激活命令：
 
-榛樿瀹夎鐨勬槸 CPU 鐗?PyTorch銆傚闇€ CUDA 鍔犻€燂細
-
-```bash
-cd CcAsr
-.venv\Scripts\python.exe -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+```powershell
+.\.venv\Scripts\Activate.ps1
 ```
 
-> 闇€瑕佸厛瀹夎 [NVIDIA CUDA Toolkit 12.1](https://developer.nvidia.com/cuda-12-1-0-download-archive) 鍜屽搴?cuDNN銆?
-
-### macOS锛圡PS 鍔犻€燂級
-
-macOS Apple Silicon 鑷姩浣跨敤 MPS锛屾棤闇€棰濆閰嶇疆銆?
-
-## 4. 閰嶇疆鐜鍙橀噺锛圓I 鎬荤粨鍔熻兘锛?
-
-AI 鎬荤粨鍔熻兘闇€瑕侀厤缃?LLM API銆傚鍒舵ā鏉垮苟濉啓锛?
+macOS / Linux 激活命令：
 
 ```bash
-cd CcAsr
-cp .env.example .env     # Windows: copy .env.example .env
+source .venv/bin/activate
 ```
 
-缂栬緫 `.env`锛?
+激活后执行：
 
 ```bash
-# LLM API 閰嶇疆锛圤penAI 鍏煎鎺ュ彛锛?
-CCASR_LLM_API_BASE=https://api.openai.com/v1    # API 鍦板潃
-CCASR_LLM_API_KEY=sk-xxx                          # 浣犵殑 API Key
-CCASR_LLM_MODEL=gpt-4o                            # 妯″瀷鍚嶇О
-CCASR_LLM_MAX_CONTEXT=1000000                     # 鏈€澶т笂涓嬫枃闀垮害锛堝彲閫夛紝榛樿 1M锛?
+python -m pip install -e .
+python run_server.py
 ```
 
-- 鏀寔浠讳綍 OpenAI 鍏煎 API锛堝 DeepSeek銆丮oonshot銆佹湰鍦?Ollama 绛夛級
-- `.env` **浠呭湪鍚庣鍚姩鏃跺姞杞?*锛屼慨鏀瑰悗蹇呴』閲嶅惎鏈嶅姟鎵嶇敓鏁?
-- 濉ソ鍚庡彲璺戣繛閫氭€ц嚜妫€锛歚.venv\Scripts\python.exe backend\tests\check_llm_live.py`
-- 涔熷彲闅忔椂鏌ョ湅 `GET /health` 鐨?`llm` 瀛楁锛屽畠浼氭寚鍑洪厤缃棶棰?
+pip 不读取 `[tool.uv]` 的索引配置，PyTorch 版本按设备需求选择。
 
-> 濡備笉闇€瑕佷細璁邯瑕佸姛鑳斤紝鍙烦杩囨姝ラ锛屼笉褰卞搷杞綍銆?
-> 杞綍鏈韩**涓嶉渶瑕?* LLM銆?
+</details>
 
-## 5. 鍓嶇瀹夎
+## 2. 配置纪要服务
 
-```bash
-cd app
-npm install
+只使用转录时可跳过。纪要需要一个 OpenAI 兼容的 Chat Completions 服务。
+
+Windows PowerShell：
+
+```powershell
+Copy-Item .env.example .env
 ```
 
-## 6. 鍚姩鏈嶅姟
-
-Windows 鍙洿鎺ュ弻鍑?`start_backend.bat` / `start_frontend.bat`锛屾垨鎸変笅鏂囨墜鍔ㄥ惎鍔ㄣ€?
-
-**缁堢 1 鈥?鍚庣锛堢鍙?8000锛夛細**
+macOS / Linux：
 
 ```bash
-cd CcAsr
-# Windows
-.venv\Scripts\python.exe run_server.py
-# macOS / Linux
-.venv/bin/python run_server.py
+cp .env.example .env
 ```
 
-**Debug 妯″紡**锛堣緭鍑鸿缁嗘棩蹇楋級锛?
+编辑 `.env`，替换占位符：
 
-```bash
-# Windows
-.venv\Scripts\python.exe run_server.py --debug
-# macOS / Linux
-.venv/bin/python run_server.py --debug
+```dotenv
+CCASR_LLM_API_BASE=https://your-provider.example/v1
+CCASR_LLM_API_KEY=REPLACE_WITH_YOUR_API_KEY
+CCASR_LLM_MODEL=your-model-name
 ```
 
-**缁堢 2 鈥?鍓嶇锛堢鍙?5173锛夛細**
+地址不含 `/chat/completions` 后缀，模型名以服务商实际名称为准。可连接云端或本地兼容服务；云端纪要会发送转录文本与参考材料，默认音频识别在本地完成。
+
+`.env` 已被 Git 忽略。修改后需重启后端。
+
+| 可选变量 | 默认值 / 行为 |
+| :--- | :--- |
+| `CCASR_OUTPUT_DIR` | 输出至 `~/CcAsr/output` |
+| `CCASR_DEBUG` | `0`；设为 `1` 输出详细日志 |
+| `CCASR_ASR_ROUTING` | `auto`；可强制 `sensevoice` 或 `whisper` |
+| `CCASR_WHISPER_MODEL` | `small` |
+| `CCASR_WHISPER_DEVICE` | `cpu` |
+| `CCASR_WHISPER_COMPUTE_TYPE` | `int8` |
+
+完整模板见 [.env.example](.env.example)。`CCASR_LLM_MAX_CONTEXT` 当前未用于纪要输入限制；实现使用固定的 120,000 字符上限截取转录。
+
+旧版 `WINASR_*` 和 `CCASR_BACKEND` 仍有兼容逻辑，新配置建议使用 `CCASR_*` 与 `CCASR_ASR_ROUTING`。
+
+## 3. 启动工作台
+
+终端 1，在仓库根目录：
 
 ```bash
-cd CcAsr/app
+uv run python run_server.py
+```
+
+终端 2，在仓库的 `app/` 目录：
+
+```bash
+npm ci
 npm run dev
 ```
 
-鎵撳紑娴忚鍣ㄨ闂?`http://localhost:5173`銆?
+打开 [localhost:5173](http://localhost:5173)。Vite 将 `/api` 转发至后端 8000 端口。
 
-## 7. 鏋勫缓鐢熶骇鐗堟湰
+Windows 也可在依赖安装完成后双击 `start_backend.bat` 与 `start_frontend.bat`。
 
-```bash
-cd CcAsr/app
-npm run build
-```
+## 4. 构建部署
 
-鏋勫缓浜х墿杈撳嚭鍒?`app/dist/`锛屽悗绔?FastAPI 浼氳嚜鍔ㄦ墭绠★紙璁块棶 `http://localhost:8000`锛夈€?
-
-## 鍐呯綉璁块棶
-
-Vite 宸查厤缃?`host: true`锛屽墠绔嚜鍔ㄧ洃鍚?`0.0.0.0`銆傚眬鍩熺綉鍐呴€氳繃 `http://<鏈満IP>:5173` 璁块棶銆?
-
-## 鏂囦欢绠＄悊
-
-- 涓婁紶鏂囦欢瀛樺偍鍦?`~/CcAsr/output/files/`锛圵indows锛歚C:\Users\<浣?\CcAsr\output\files\`锛夛紝浠?MD5 鍝堝笇鍛藉悕锛堝幓閲嶏級
-- 鍏冩暟鎹褰曞湪 `output/files/metadata.json`
-- 鏂囦欢姘镐箙淇濆瓨锛屼笉浼氶殢浠诲姟娓呯悊鑰屽垹闄?
-- 鍙敤 `CCASR_OUTPUT_DIR` 鑷畾涔夎緭鍑虹洰褰?
-
-## 甯歌闂
-
-### Q: `uv sync` 鎶?Python 鐗堟湰涓嶆弧瓒筹紵
-
-uv 浼氳嚜鍔ㄤ笅杞?Python 3.12锛屾棤闇€鎵嬪姩瀹夎銆傚閬囬棶棰樺彲鎸囧畾鐗堟湰锛?
+在 `app/` 中执行 `npm run build`，生成 `app/dist/`。从仓库根目录启动或重启后端：
 
 ```bash
-uv python install 3.12
-uv sync
+uv run python run_server.py
 ```
 
-### Q: GPU 娌¤鐢ㄤ笂 / 濡備綍纭璁惧锛?
+访问 [localhost:8000](http://localhost:8000)，无需另开前端开发服务。后端在启动时检测构建目录，并支持 SPA 路由刷新。
 
-鍚庣 `/health` 鎺ュ彛鐨?`device` 瀛楁浼氭樉绀哄疄闄呬娇鐢ㄧ殑璁惧銆?
-
-- 鏃犵嫭绔嬫樉鍗℃椂鑷姩鍥為€€ CPU锛屼娇鐢ㄥ鏍稿苟琛岋紙涓嶉渶瑕侀澶栭厤缃級
-- NVIDIA 鏄惧崱闇€瑁?CUDA 鐗?PyTorch锛堣绗?3 鑺傦級
-- MPS 浠?macOS Apple Silicon 鍙敤
-
-### Q: 棣栨鍔犺浇妯″瀷寰堟參锛?
-
-棣栨杩愯闇€涓嬭浇妯″瀷鏂囦欢锛垀1GB锛夛紝鍚庣画璧版湰鍦扮紦瀛樸€傚彲鎻愬墠鎵嬪姩涓嬭浇锛?
+进程托管可参考 [ecosystem.config.js](ecosystem.config.js)。其中前端条目为开发服务，使用已构建页面时只启动后端：
 
 ```bash
-cd CcAsr
-# Windows
-.venv\Scripts\python.exe -c "from funasr import AutoModel; AutoModel(model='iic/SenseVoiceSmall')"
-# macOS / Linux
-.venv/bin/python -c "from funasr import AutoModel; AutoModel(model='iic/SenseVoiceSmall')"
+pm2 start ecosystem.config.js --only ccasr-backend
 ```
 
-### Q: 绔彛琚崰鐢紵
+后端与 Vite 默认监听全部网络接口。当前应用没有账号鉴权，局域网或远程部署应由部署环境控制访问范围。
+
+## 可选后端与 GPU
+
+### faster-whisper
 
 ```bash
-# macOS / Linux
-lsof -ti:8000 && kill $(lsof -ti:8000)
+uv sync --extra whisper
 ```
 
-```powershell
-# Windows
-Get-NetTCPConnection -LocalPort 8000 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
-```
+`auto` 路由在语种超出中、粤、英、日、韩范围时使用 faster-whisper。网页只提供上述五种语种与自动检测，其他语种可通过 [上传 API](docs/API.md#上传录音) 指定；也可设 `CCASR_ASR_ROUTING=whisper` 强制使用。
 
-### Q: 鍚庣閲嶅惎鍚庝换鍔″垪琛ㄤ负绌猴紵
+此路径不做说话人分离。可选依赖约束 `av>=11,<19` 用于匹配现有 faster-whisper 调用。
 
-浠诲姟鍒楄〃鎸佷箙鍖栧湪 `output/tasks.json`锛岄噸鍚悗浼氳嚜鍔ㄥ姞杞斤紱
-杞啓缁撴灉锛坄output/*.json`锛夊拰闊抽鏂囦欢锛坄output/files/`锛夊悓鏍锋寔涔呬繚瀛樺湪纾佺洏涓娿€?
+### GPU 加速
 
-### Q: 淇敼 .env 鍚?AI 鎬荤粨涓嶇敓鏁堬紵
+uv 配置包含 CPU 版 PyTorch 索引。NVIDIA 环境需安装匹配的 CUDA 版 `torch` 与 `torchaudio`，按 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/) 获取命令并安装到项目虚拟环境。
 
-`.env` 鍦ㄥ悗绔惎鍔ㄦ椂鍔犺浇涓€娆★紝淇敼鍚庡繀椤婚噸鍚湇鍔★細
+检查可用设备：
 
 ```bash
-# 濡傛灉鐢?pm2
-pm2 reload ccasr-backend
-
-# 濡傛灉鎵嬪姩鍚姩锛氬厛 Ctrl+C 鍋滄锛屽啀閲嶆柊鍚姩
+uv run python -c "import torch; print('CUDA:', torch.cuda.is_available()); print('MPS:', hasattr(torch.backends, 'mps') and torch.backends.mps.is_available())"
 ```
 
-> Prompt 妯℃澘锛坄backend/prompts/*.md`锛夋敮鎸佺儹鏇存柊锛屼慨鏀瑰悗鏃犻渶閲嶅惎銆?
+手动替换后，`uv sync` 或自动同步可能重新解析依赖。确认环境后，可用 `uv run --no-sync python run_server.py` 启动。
+
+## 常见问题
+
+**首次转录很慢**
+
+查看终端是否在下载或加载模型。首次运行依赖网络，后续复用缓存；确认 `ffmpeg -version` 可执行。
+
+**有转录但没有纪要**
+
+查看 [/health](http://localhost:8000/health) 中的 `llm` 字段。配置检查不发网络请求；真实连通性可用 `uv run python backend/tests/check_llm_live.py` 验证（发送一次请求）。修正配置、重启后端后重新生成纪要，无需重跑转录。
+
+**说话人标签不准确**
+
+短片段、噪声或重叠发言会影响聚类。可以改单句归属或批量改判；不足 1 秒的声纹片段不参与跨录音全局聚类。
+
+**保存后纪要提示待更新**
+
+纪要仍基于生成时的转录。保存修改后，在纪要页点击「重新生成」。
+
+**重启后找不到会议**
+
+确认运行账号与 `CCASR_OUTPUT_DIR` 未变化。数据默认在用户主目录下的 `CcAsr/output/`，不保存在代码仓库中。
+
+**豆包云端能用吗**
+
+相关接口要求公网音频 URL，当前上传链路未接入对象存储，不能直接使用。

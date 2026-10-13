@@ -1,71 +1,40 @@
-# README 配图
+# 品牌与首页配图
 
-这些图片是 **CcAsr 真实界面**的截图，不是设计稿。
+[项目首页](../../README.md) · [仓库展示](../GITHUB.md)
 
-| 文件 | 内容 |
-|------|------|
-| `01-meeting-list.png` | 我的会议（一个会议 = 一份文档） |
-| `03-summary.png` | 会议纪要（章节与版式组件） |
-| `03b-evidence.png` | 会议纪要 + **证据链徽章**（README 首图） |
-| `04-transcript.png` | 合并转录（跨录音统一时间轴、说话人改名） |
-| `05-recordings.png` | 录音队列状态 |
-| `demo-evidence-jump.gif` | 演示：点证据徽章 → 跳到合并转录并播放 |
+## 首页素材
 
-## 重新生成
+| 文件 | 用途 |
+| :--- | :--- |
+| `readme-cover.svg` | README 品牌封面；可直接编辑的矢量源文件 |
+| `social-preview.png` | 1280 × 640 的 GitHub 分享预览图 |
+| `readme-summary.png` | 当前应用的结构化纪要界面，使用虚构会议数据 |
+| `readme-transcript.png` | 当前应用的合并转录界面，使用同一份虚构会议数据 |
 
-需要后端已在 `http://localhost:8000` 运行，且库里有**至少一个已生成纪要的会议**。
+封面沿用 [现有 Logo](../design/logo.svg) 和纸面工作台配色。封面右侧是产品概念示意；两张界面配图则由实际前端渲染，没有改动应用样式。
 
-### 1. 静态截图
+## 重现示例界面
 
-```bash
-node app/scripts/capture-readme-shots.mjs
-```
-
-脚本会自动挑一个「有纪要且录音数 ≥ 2」的会议作为素材，
-用 Chrome DevTools Protocol 以 2x 缩放截取 1440×900 视口。
-
-### 2. 演示 GIF
-
-先抓帧：
+先在 `app/` 中执行 `npm ci` 和 `npm run build`。然后从仓库根目录运行：
 
 ```bash
-node app/scripts/capture-demo-frames.mjs
+node app/scripts/docs-demo.mjs
 ```
 
-会在 `_frames/` 下产出 9 张 PNG（含点击证据徽章前后的对比）。
-再用 ffmpeg 合成（`_frames` 里的文件名带括号，**用 PowerShell 而非 .cmd**，
-否则 cmd 会把括号当成命令分隔符）：
+打开 [示例会议](http://127.0.0.1:8765/meeting/demo-review)，分别在「会议纪要」和「合并转录」中截图。截图可按阅读位置滚动，让标题与主要内容完整呈现。
 
-```powershell
-cd docs\images
-$ff = "ffmpeg"   # 或 ffmpeg 的完整路径
-$frames = @(
-  @{f='f000-summary-evidence.png';    d=0.9},
-  @{f='f001-summary-evidence-2.png';  d=0.7},
-  @{f='f002-chip-highlight.png';      d=0.5},
-  @{f='f003-chip-highlight-2.png';    d=0.9},
-  @{f='f004-jumped-transcript.png';   d=1.3},
-  @{f='f005-jumped-transcript-2.png'; d=0.7},
-  @{f='f006-transcript-scroll.png';   d=0.7},
-  @{f='f007-transcript-scroll-2.png'; d=0.7},
-  @{f='f008-transcript-scroll-3.png'; d=1.6},
-  @{f='f008-transcript-scroll-3.png'; d=0.1}
-)
-$lines = @('ffconcat version 1.0')
-foreach ($x in $frames) { $lines += "file '_frames/$($x.f)'"; $lines += "duration $($x.d)" }
-$lines | Set-Content frames.txt -Encoding ASCII
+该服务只监听本机 8765 端口，提供虚构的产品评审数据和已构建的真实前端。它不访问会议存储、不运行 ASR、不调用 LLM，写入请求返回 405。音频回放和导出等接口不在此展示服务中实现；示例数据不用于说明真实识别准确率。结束后按 Ctrl+C 停止。
 
-& $ff -y -f concat -safe 0 -i frames.txt -vf "fps=10,scale=1000:-1:flags=lanczos,palettegen=stats_mode=diff" _palette.png
-& $ff -y -f concat -safe 0 -i frames.txt -i _palette.png -lavfi "fps=10,scale=1000:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" -loop 0 demo-evidence-jump.gif
+## 既有截图与录屏
 
-Remove-Item _palette.png, frames.txt
+`ui-*.png` 和 `demo-evidence-jump.gif` 保留为历史界面资料。重新截取已有会议时，在 `app/` 中运行：
+
+```bash
+npm run shots
 ```
 
-> `_frames/` 与 `_palette.png` 是中间产物，可以随时删除；
-> 最终只保留本目录下的 5 张 PNG + 1 个 GIF（合计约 1.2 MB）。
+需已构建前端、后端在 8000 端口运行，且有已生成纪要的会议。脚本是 `app/scripts/capture-ui-shots.mjs`，原始输出位于 `.workbuddy/readme-shots/`，不会自动覆盖本目录。
 
-## 注意
+该脚本会临时修改并还原说话人显示名，但不会清理会议名或正文里的信息。用于仓库展示时，应先确认素材内容适合分享。
 
-- 截图里的会议名是测试数据（`QA-20261012-multi`）。若换成真实会议名，
-  注意别把客户名、参会人姓名带进公开仓库。
-- 说话人显示名（张三/李四）是演示用的改名结果，非真实姓名。
+录屏抓帧脚本为 `app/scripts/capture-demo-frames.mjs`；生成 GIF 另需 ffmpeg。当前首页不依赖该录屏。

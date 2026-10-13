@@ -1,73 +1,44 @@
-# React + TypeScript + Vite
+# CcAsr 前端
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+[项目首页](../README.md) · [安装指南](../INSTALL.md) · [设计规范](../docs/design/CcAsr-UI-Redesign.html)
 
-Currently, two official plugins are available:
+会议录音工作台的 React 客户端，包括会议列表、结构化纪要、合并转录编辑器与录音队列。
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 开发
 
-## React Compiler
+推荐 Node.js 22.12+，在本目录执行：
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm ci
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+先在仓库根目录运行 `uv run python run_server.py`。访问 [localhost:5173](http://localhost:5173)，Vite 将 `/api` 转发至后端 8000 端口。
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## 常用命令
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+| 命令 | 用途 |
+| :--- | :--- |
+| `npm run dev` | Vite 开发服务 |
+| `npm run build` | TypeScript 检查并构建至 `dist/` |
+| `npm run lint` | ESLint |
+| `npm run test:fe` | 纪要解析、文本转义、编辑状态与配色验证 |
+| `npm run test:be` | 跨平台后端套件入口 |
+| `npm run preview` | 前端构建预览；没有后端 API 代理 |
+| `npm run shots` | 已有会议截图，见 [配图说明](../docs/images/README.md) |
+
+正式构建后，重启后端即可从 8000 端口使用完整功能。依赖由 `package-lock.json` 锁定，统一使用 npm。
+
+## 工程入口
+
+```text
+src/components/  会议页面、转录工作区、纪要与共享 UI
+src/services/    API 客户端与纪要数据解析
+src/styles/      全局样式与设计令牌
+src/types/       会议、录音、转录与纪要类型
+src/utils/       编辑状态、时间、转义与说话人配色
+scripts/         后端测试入口、浏览器验收与截图脚本
+tests/           前端验证
 ```
+
+颜色、间距与字号集中在 `src/styles/global.css`。`MeetingDetailPage` 管理共享草稿和播放器，纪要证据跳转与转录回放共用音频状态。
