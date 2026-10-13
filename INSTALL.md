@@ -19,12 +19,12 @@ CPU 可以运行默认识别链路。CUDA 与 Apple Silicon MPS 为可选加速�
 ## 1. 获取代码与安装后端
 
 ```bash
-git clone https://github.com/Xuzc317/ASR.git CcAsr
+git clone https://github.com/Xuzc317/CcAsr.git
 cd CcAsr
 uv sync
 ```
 
-私有仓库需要有访问权限的 GitHub 账号认证。已配置 SSH 时也可使用 `git@github.com:Xuzc317/ASR.git`。
+私有仓库需要有访问权限的 GitHub 账号认证。已配置 SSH 时也可使用 `git@github.com:Xuzc317/CcAsr.git`。
 
 uv 创建 `.venv` 并安装依赖。首次转录下载 SenseVoice、VAD 与声纹模型；之后使用本地缓存。
 

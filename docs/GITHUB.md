@@ -2,7 +2,7 @@
 
 [项目首页](../README.md) · [品牌与配图](images/README.md)
 
-仓库名称保留 ASR，产品名称统一使用 **CcAsr**。
+仓库与产品名称统一使用 **CcAsr**，仓库地址为 [Xuzc317/CcAsr](https://github.com/Xuzc317/CcAsr)。
 
 ## About 简介
 

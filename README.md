@@ -10,7 +10,7 @@
 
 ![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-4F46E5?style=flat-square&labelColor=292934)
 ![React 19](https://img.shields.io/badge/React-19-4F46E5?style=flat-square&labelColor=292934)
-![ASR 本地运行](https://img.shields.io/badge/ASR-本地运行-0E9F6E?style=flat-square&labelColor=292934)
+![本地转录](https://img.shields.io/badge/转录-本地运行-0E9F6E?style=flat-square&labelColor=292934)
 
 [功能亮点](#功能亮点) · [界面预览](#界面预览) · [快速开始](#快速开始) · [文档](#文档)
 
@@ -63,7 +63,7 @@ CcAsr 是一个可自行部署的会议录音工作台。它按会议组织录�
 **1. 获取代码并安装后端依赖**
 
 ```bash
-git clone https://github.com/Xuzc317/ASR.git CcAsr
+git clone https://github.com/Xuzc317/CcAsr.git
 cd CcAsr
 uv sync
 ```
